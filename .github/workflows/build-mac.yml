@@ -52,10 +52,23 @@ jobs:
           mkdir -p "$DMG_TMP"
           cp -R "dist/${APP_NAME}.app" "$DMG_TMP/"
           ln -s /Applications "$DMG_TMP/Applications"
-          hdiutil create -volname "${APP_NAME}" \
-            -srcfolder "$DMG_TMP" \
-            -ov -format UDZO \
-            "dist/${APP_NAME}-${VERSION}-${ARCH}.dmg"
+          OUT="dist/${APP_NAME}-${VERSION}-${ARCH}.dmg"
+          rm -f "$OUT"
+          # macos-15-intel 镜像上 hdiutil 偶发 "Resource busy"（多为 Spotlight/
+          # 磁盘映像守护进程占用），重试即可成功
+          ok=0
+          for i in 1 2 3 4 5; do
+            echo "hdiutil create attempt $i"
+            if hdiutil create -volname "${APP_NAME}" \
+                 -srcfolder "$DMG_TMP" \
+                 -ov -format UDZO \
+                 "$OUT"; then
+              ok=1
+              break
+            fi
+            sleep $((i * 5))
+          done
+          [ "$ok" = 1 ] || { echo "hdiutil create failed after 5 attempts"; exit 1; }
           rm -rf "$DMG_TMP"
 
       - name: Upload DMG
