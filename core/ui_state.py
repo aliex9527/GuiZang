@@ -155,9 +155,9 @@ class DbState:
         return raw if raw != "" else None
 
 
-def splitter_sizes(state: DbState, default: List[int]) -> List[int]:
+def splitter_sizes(state: DbState, default: List[int], key: str = "splitter") -> List[int]:
     """读取分割器尺寸，数量不对就退回默认（列数变化后旧值会错位）。"""
-    sizes = state.value("splitter", default, list)
+    sizes = state.value(key, default, list)
     if isinstance(sizes, list) and len(sizes) == len(default) and all(s >= 0 for s in sizes):
         return sizes
     return default

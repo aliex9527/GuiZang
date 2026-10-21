@@ -114,16 +114,24 @@ class DatabaseView(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
+        # 上部：分类栏 | 正文；下部：附件栏（横向铺开）
         self.splitter = QSplitter(Qt.Horizontal, self)
         self.splitter.setChildrenCollapsible(False)
         self.splitter.setHandleWidth(1)
         self.splitter.addWidget(self._build_side())
         self.splitter.addWidget(self._build_editor())
-        self.splitter.addWidget(self._build_attachments())
-        self.splitter.setSizes([250, 1010, 320])
+        self.splitter.setSizes([250, 1010])
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.widget(2).setVisible(False)
-        outer.addWidget(self.splitter, 1)
+
+        self.vsplitter = QSplitter(Qt.Vertical, self)
+        self.vsplitter.setChildrenCollapsible(False)
+        self.vsplitter.setHandleWidth(1)
+        self.vsplitter.addWidget(self.splitter)
+        self.vsplitter.addWidget(self._build_attachments())
+        self.vsplitter.setSizes([680, 220])
+        self.vsplitter.setStretchFactor(0, 1)
+        self.attachments.setVisible(False)
+        outer.addWidget(self.vsplitter, 1)
 
         self._set_save_state(False)
 
@@ -433,7 +441,7 @@ class DatabaseView(QWidget):
         self.attachments = AttachmentPanel(self.db, self)
         self.attachments.changed.connect(self._update_counts)
         self.attachments.status.connect(lambda m: self.status_message.emit(m, 4000))
-        self.attachments.setMinimumWidth(240)
+        self.attachments.setMinimumHeight(96)
         return self.attachments
 
     def _set_db_label(self, size: Optional[int] = None) -> None:
@@ -597,7 +605,7 @@ class DatabaseView(QWidget):
         # _restore_state() 可能已经把附件栏恢复了，菜单勾选状态要跟实际可见性一致。
         # 这里用 isHidden()（反映显隐意图）而不是 isVisible()：菜单构建时窗口
         # 往往还没 show()，所有子控件 isVisible() 都是 False。
-        self.act_attach.setChecked(not self.splitter.widget(2).isHidden())
+        self.act_attach.setChecked(not self.attachments.isHidden())
         self.act_attach.triggered.connect(self._toggle_attach_panel)
         m.addSeparator()
         m.addAction("全部展开", self._expand_all)
@@ -644,7 +652,7 @@ class DatabaseView(QWidget):
         if hasattr(self, "act_side"):
             self.act_side.setChecked(not self.splitter.widget(0).isHidden())
         if hasattr(self, "act_attach"):
-            self.act_attach.setChecked(not self.splitter.widget(2).isHidden())
+            self.act_attach.setChecked(not self.attachments.isHidden())
 
     # ------------------------------------------------------------ 视图动作
 
@@ -652,7 +660,7 @@ class DatabaseView(QWidget):
     _typewriter = False
 
     def _toggle_attach_panel(self, on: bool) -> None:
-        panel = self.splitter.widget(2)
+        panel = self.attachments
         panel.setVisible(on)
         # 菜单项 act_attach 在 build_menus() 里才创建，而 _restore_state()
         # 会在那之前调用本方法恢复上次的面板状态，所以要判空
@@ -661,8 +669,10 @@ class DatabaseView(QWidget):
         if hasattr(self, "settings"):
             self.settings.setValue("attach_panel", on)
         if on:
-            self.splitter.setSizes([self.splitter.widget(0).width(),
-                                    max(360, self.editor.width() - 320), 320])
+            sizes = self.vsplitter.sizes()
+            if len(sizes) != 2 or sizes[1] < 80:
+                total = max(360, self.vsplitter.height())
+                self.vsplitter.setSizes([max(200, total - 200), 200])
 
     def show_attach_panel(self) -> None:
         self._toggle_attach_panel(True)
@@ -689,7 +699,7 @@ class DatabaseView(QWidget):
         self._focus_mode = not self._focus_mode
         on = self._focus_mode
         self.splitter.widget(0).setVisible(not on)
-        self.splitter.widget(2).setVisible(not on)
+        self.attachments.setVisible(not on)
         if hasattr(self, "act_side"):
             self.act_side.setChecked(not on)
         if hasattr(self, "act_attach"):
@@ -1601,7 +1611,15 @@ class DatabaseView(QWidget):
         self._set_db_label(s["db_bytes"])
 
     def _restore_state(self) -> None:
-        self.splitter.setSizes(splitter_sizes(self.settings, self.splitter.sizes()))
+        # 记下待恢复的分割比例，窗口真正显示后再应用一次：
+        # 未 show 时 setSizes 会被后续布局覆盖
+        # 默认值写死：窗口未 show 时控件尺寸还没算出来，不能拿当前 sizes 当默认
+        self._pending_sizes = (
+            splitter_sizes(self.settings, [250, 1010], "splitter"),
+            splitter_sizes(self.settings, [680, 220], "vsplitter"),
+        )
+        self.splitter.setSizes(self._pending_sizes[0])
+        self.vsplitter.setSizes(self._pending_sizes[1])
 
         # 主题也存在库里：同一个 .db 换台机器打开，外观保持一致
         from ui import theme as theme_mod
@@ -1611,12 +1629,25 @@ class DatabaseView(QWidget):
         else:
             self._sync_theme_checks(theme_mod.current())
 
-        if self.settings.value("attach_panel", False, type=bool):
+        if self.settings.value("attach_panel", True, type=bool):
             self.show_attach_panel()
 
         last = self.db.get_meta("last_node", "")
         if last.isdigit() and int(last) in self._items:
             self._select_node(int(last))
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        pending = getattr(self, "_pending_sizes", None)
+        if pending:
+            self._pending_sizes = None
+            sizes_h, sizes_v = pending
+
+            def apply_sizes() -> None:
+                self.splitter.setSizes(sizes_h)
+                self.vsplitter.setSizes(sizes_v)
+
+            QTimer.singleShot(0, apply_sizes)
 
     def closeEvent(self, event):  # noqa: N802
         try:
@@ -1624,6 +1655,7 @@ class DatabaseView(QWidget):
             if self._current_id is not None:
                 self.db._set_meta("last_node", str(self._current_id))
             self.settings.setValue("splitter", self.splitter.sizes())
+            self.settings.setValue("vsplitter", self.vsplitter.sizes())
             self.db.close()
         except Exception:  # noqa: BLE001
             pass
