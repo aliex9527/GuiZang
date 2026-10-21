@@ -169,6 +169,9 @@ class MarkdownEdit(QTextEdit):
         self.image_sink: Optional[Callable[[bytes, str], Optional[Tuple[str, int]]]] = None
         # 图片原始像素尺寸查询（fid -> (w, h)），由资料库侧注入
         self.image_size: Optional[Callable[[int], Optional[Tuple[int, int]]]] = None
+        # 原图字节查询（fid -> bytes），用于平滑缩放后再交给文档绘制
+        self.image_loader: Optional[Callable[[int], Optional[bytes]]] = None
+        self._image_cache: dict = {}
         self.file_sink: Optional[Callable[[list], None]] = None
         self.md_rules = True
         self.setAcceptRichText(True)
@@ -214,6 +217,7 @@ class MarkdownEdit(QTextEdit):
         fmt.setWidth(max(80, min(width, self._avail_width())))
         cur = self.textCursor()
         cur.insertImage(fmt)
+        self.fit_images()
         return True
 
     def insertFromMimeData(self, source):  # noqa: N802
@@ -260,6 +264,34 @@ class MarkdownEdit(QTextEdit):
             return None
         return self.image_size(fid)
 
+    def _orig_image(self, fid: int) -> Optional[QImage]:
+        """原图（解码一次后缓存），缩放一律从原图出发，避免反复插值损失。"""
+        img = self._image_cache.get(fid)
+        if img is not None and not img.isNull():
+            return img
+        data = self.image_loader(fid) if self.image_loader is not None else None
+        if not data:
+            return None
+        img = QImage.fromData(data)
+        if img.isNull():
+            return None
+        self._image_cache[fid] = img
+        return img
+
+    def _swap_resource(self, doc, name: str, img: QImage, target: int) -> None:
+        """把文档里的图片资源换成精确等于显示尺寸的平滑缩放版。
+
+        QTextDocument 绘制时不做平滑插值，尺寸不匹配就会锯齿失真；
+        让资源尺寸 == 显示尺寸，绘制时 1:1，任何缩放比例都清晰。
+        """
+        if img.isNull() or img.width() <= 0:
+            return
+        if target >= img.width() * 2:
+            return  # 放大超过 2 倍才让文档直接用原图，避免内存浪费
+        h = max(1, round(target * img.height() / img.width()))
+        scaled = img.scaled(target, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        doc.addResource(QTextDocument.ImageResource, QUrl(name), scaled)
+
     def fit_images(self) -> bool:
         """按当前可视宽度重排正文图片：小图保持原像素，大图缩到刚好放得下。"""
         doc = self.document()
@@ -276,7 +308,12 @@ class MarkdownEdit(QTextEdit):
                     frag = it.fragment()
                     if frag.isValid() and frag.charFormat().isImageFormat():
                         fmt = frag.charFormat().toImageFormat()
+                        name = fmt.name()
                         size = self._orig_size(fmt)
+                        fid = self._fid_of(name)
+                        orig = self._orig_image(fid) if fid is not None else None
+                        if size is None and orig is not None:
+                            size = (orig.width(), orig.height())
                         cur_w = int(round(fmt.width())) if fmt.width() > 0 else 0
                         if size and size[0] > 0:
                             target = min(size[0], avail)
@@ -294,6 +331,8 @@ class MarkdownEdit(QTextEdit):
                                 new_fmt.setHeight(max(1, round(target * size[1] / size[0])))
                             cursor.setCharFormat(new_fmt)
                             changed = True
+                        if orig is not None and target > 0:
+                            self._swap_resource(doc, name, orig, target)
                     it += 1
                 block = block.next()
         finally:
@@ -793,6 +832,7 @@ class NoteEditor(QWidget):
 
         self.edit = MarkdownEdit(self)
         self.edit.image_sink = self._image_saver
+        self.edit.image_loader = self._resolver
         doc = NoteDocument(self._resolver, self.edit)
         doc.setDefaultStyleSheet(preview_css())
         doc.setDocumentMargin(26)
