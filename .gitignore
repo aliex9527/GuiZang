@@ -1,6 +1,8 @@
 # 打包产物
 dist/
+dist_v2/
 build/
+build_pyi/
 *.spec.bak
 
 # Python
