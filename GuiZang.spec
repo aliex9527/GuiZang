@@ -41,5 +41,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    # 声明 PerMonitorV2 DPI 感知，避免 Windows 把窗口位图拉伸导致发虚
+    manifest='tools/GuiZang.manifest',
     icon=['build/icon.ico'],
 )

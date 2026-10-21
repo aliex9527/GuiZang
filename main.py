@@ -53,10 +53,12 @@ def resolve_db_file(argv: list[str]) -> Path:
     if env:
         return _normalize(env)
 
-    from core.config import last_db
-    last = last_db()
+    # 「上次打开的库」记在便携库（程序目录下的 归藏.db）的 meta 里，
+    # 因此系统里不再需要任何配置文件。
+    from core.ui_state import last_library
+    last = last_library()
     if last is not None:
-        return last
+        return _normalize(last)
 
     portable = app_root() / DEFAULT_NAME
     if _writable(app_root()) and not (portable.exists() and not os.access(portable, os.W_OK)):
@@ -91,17 +93,22 @@ def migrate_legacy(target: Path) -> bool:
 
 
 def main() -> int:
+    from PySide6.QtCore import Qt
     from PySide6.QtGui import QFont
     from PySide6.QtWidgets import QApplication
 
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-    from core.config import remember_db
     from core.database import Database
     from core.storage import cache_root, clear_cache
     from ui import style, theme
     from ui.icons import app_icon
     from ui.main_window import MainWindow
+
+    # 高分屏：不做整数倍取整，150% 的缩放比下字体仍按真实像素渲染，
+    # 界面不会先按 100% 画完再被系统拉伸，截图文字才清晰。
+    QApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 
     QApplication.setApplicationName("GuiZang")
     QApplication.setOrganizationName("GuiZang")
@@ -109,10 +116,6 @@ def main() -> int:
     app.setStyle("Fusion")
     from ui.fonts import UI_FONT_FAMILY
     app.setFont(QFont(UI_FONT_FAMILY, 9))
-    from core.config import saved_theme
-    theme.apply_theme(saved_theme())
-    app.setStyleSheet(style.qss())
-    app.setWindowIcon(app_icon())
 
     clear_cache()
 
@@ -123,11 +126,17 @@ def main() -> int:
     cache_root()
 
     db = Database(db_file)
-    remember_db(db.db_path)
+    # 主题跟着库走（存在 meta 里），不再读 %APPDATA%/GuiZang/config.json
+    theme.apply_theme(db.get_meta("ui.theme", "light"))
+    app.setStyleSheet(style.qss())
+    app.setWindowIcon(app_icon())
 
     window = MainWindow(db)
     window.show()
-    return app.exec()
+    code = app.exec()
+    # 退出时再清一次：临时释放出来的附件文件不留痕
+    clear_cache()
+    return code
 
 
 if __name__ == "__main__":

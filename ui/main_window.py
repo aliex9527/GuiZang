@@ -10,13 +10,13 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (QApplication, QLabel, QMainWindow, QMessageBox,
                                QTabBar, QTabWidget, QWidget)
 
-from core.config import remember_db
 from core.database import Database
+from core.ui_state import DbState, remember_library
 from ui.database_view import DatabaseView
 from ui.icons import app_icon
 
@@ -24,7 +24,9 @@ from ui.icons import app_icon
 class MainWindow(QMainWindow):
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
-        self.settings = QSettings("GuiZang", "GuiZang")
+        # 窗口几何同样存进当前库，不在注册表留痕
+        self._db = db
+        self.settings = DbState(db)
         self._views: list[DatabaseView] = []
 
         self.setWindowTitle("归藏 · 个人资料库")
@@ -89,12 +91,13 @@ class MainWindow(QMainWindow):
         view.open_library_requested.connect(self._open_library_file)
         view.new_library_requested.connect(self._new_library_file)
 
+        remember_library(db.db_path)
+
         idx = self.tabs.addTab(view, db.db_path.name)
         self.tabs.setTabToolTip(idx, str(db.db_path))
         if select:
             self.tabs.setCurrentIndex(idx)
 
-        remember_db(db.db_path)
         # 立即同步该 view 的状态到状态栏（因为它可能不是当前活动标签）
         self._refresh_statusbar(view)
         return view
@@ -218,7 +221,9 @@ class MainWindow(QMainWindow):
             self.showFullScreen()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
-        self.settings.setValue("geometry", self.saveGeometry())
+        view = self._current_view() or (self._views[0] if self._views else None)
+        state = DbState(view.db) if view is not None else self.settings
+        state.setValue("geometry", self.saveGeometry())
         for v in self._views:
             try:
                 v.close()

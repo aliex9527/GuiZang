@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 
-from PySide6.QtCore import QEvent, QPoint, QSettings, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (QAction, QActionGroup, QDesktopServices, QFont, QKeySequence,
                            QShortcut, QTextListFormat)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QDialog,
@@ -24,8 +24,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QD
 
 import sqlite3
 
-from core.config import remember_db
 from core.database import Database
+from core.ui_state import DbState, splitter_sizes
 from core.storage import human_size
 from ui.attachments import AttachmentPanel
 from ui.icons import app_icon, file_icon, folder_icon, leaf_icon
@@ -81,7 +81,8 @@ class DatabaseView(QWidget):
         self._loading_tree = False
         self._syncing_item = False
 
-        self.settings = QSettings("GuiZang", "GuiZang")
+        # 界面状态存进库本身，不再写注册表
+        self.settings = DbState(db)
 
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
@@ -590,8 +591,10 @@ class DatabaseView(QWidget):
             lambda c: self.splitter.widget(0).setVisible(c))
         self.act_attach = m.addAction("显示附件栏")
         self.act_attach.setCheckable(True)
-        # _restore_state() 可能已经把附件栏恢复了，菜单勾选状态要跟实际可见性一致
-        self.act_attach.setChecked(self.splitter.widget(2).isVisible())
+        # _restore_state() 可能已经把附件栏恢复了，菜单勾选状态要跟实际可见性一致。
+        # 这里用 isHidden()（反映显隐意图）而不是 isVisible()：菜单构建时窗口
+        # 往往还没 show()，所有子控件 isVisible() 都是 False。
+        self.act_attach.setChecked(not self.splitter.widget(2).isHidden())
         self.act_attach.triggered.connect(self._toggle_attach_panel)
         m.addSeparator()
         m.addAction("全部展开", self._expand_all)
@@ -636,9 +639,9 @@ class DatabaseView(QWidget):
         if hasattr(self, "act_typewriter"):
             self.act_typewriter.setChecked(self._typewriter)
         if hasattr(self, "act_side"):
-            self.act_side.setChecked(self.splitter.widget(0).isVisible())
+            self.act_side.setChecked(not self.splitter.widget(0).isHidden())
         if hasattr(self, "act_attach"):
-            self.act_attach.setChecked(self.splitter.widget(2).isVisible())
+            self.act_attach.setChecked(not self.splitter.widget(2).isHidden())
 
     # ------------------------------------------------------------ 视图动作
 
@@ -943,7 +946,6 @@ class DatabaseView(QWidget):
 
     def set_theme(self, name: str) -> None:
         from ui import style, theme
-        from core.config import remember_theme
         theme.apply_theme(name)
         app = QApplication.instance()
         if app is not None:
@@ -953,7 +955,10 @@ class DatabaseView(QWidget):
         self.attachments.refresh()
         self.search_panel.list.viewport().update()
         self._sync_theme_checks(name)
-        remember_theme(name)
+        try:
+            self.db.set_meta("ui.theme", theme.current())
+        except Exception:  # noqa: BLE001  库已关闭时忽略
+            pass
 
     def _sync_theme_checks(self, name: str) -> None:
         for key, act in getattr(self, "_theme_actions", {}).items():
@@ -1577,15 +1582,15 @@ class DatabaseView(QWidget):
         self._set_db_label(s["db_bytes"])
 
     def _restore_state(self) -> None:
-        sizes = self.settings.value("splitter")
-        if sizes:
-            try:
-                self.splitter.setSizes([int(x) for x in sizes])
-            except (TypeError, ValueError):
-                pass
+        self.splitter.setSizes(splitter_sizes(self.settings, self.splitter.sizes()))
 
-        from ui.theme import current as current_theme
-        self._sync_theme_checks(current_theme())
+        # 主题也存在库里：同一个 .db 换台机器打开，外观保持一致
+        from ui import theme as theme_mod
+        saved_theme = self.db.get_meta("ui.theme", "")
+        if saved_theme in ("light", "dark") and saved_theme != theme_mod.current():
+            self.set_theme(saved_theme)
+        else:
+            self._sync_theme_checks(theme_mod.current())
 
         if self.settings.value("attach_panel", False, type=bool):
             self.show_attach_panel()

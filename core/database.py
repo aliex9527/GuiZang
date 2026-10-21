@@ -155,6 +155,10 @@ class Database:
         )
         self.conn.commit()
 
+    def set_meta(self, key: str, value: str) -> None:
+        """公开的 meta 写入（界面状态等也存这里，保证一个 .db 带走全部数据）。"""
+        self._set_meta(key, value)
+
     def get_meta(self, key: str, default: str = "") -> str:
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else default
