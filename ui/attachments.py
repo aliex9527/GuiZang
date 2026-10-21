@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
 from pathlib import Path
 from typing import List, Optional
 
-from PySide6.QtCore import QEvent, QSize, Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication
+from PySide6.QtCore import QEvent, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QHBoxLayout,
                                QHeaderView, QInputDialog, QLabel, QMenu, QMessageBox,
                                QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout,
@@ -17,6 +15,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QHB
 from core.database import Database
 from core.storage import ext_of, human_size
 from ui.icons import chip_icon
+from ui.open_file import open_attachment
 from ui.theme import P
 
 
@@ -191,11 +190,8 @@ class AttachmentPanel(QWidget):
         fid = self._current_file_id()
         if fid is None:
             return
-        path = self.db.path_of_file(fid)
-        if path is None:
-            QMessageBox.warning(self, "文件不存在", "附件内容在库里缺失。")
-            return
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        # 图片在窗口里直接看，不落地；其他类型才释放到临时目录
+        open_attachment(self, self.db, fid)
 
     def save_as(self) -> None:
         fid = self._current_file_id()
@@ -225,18 +221,6 @@ class AttachmentPanel(QWidget):
         if ok and new_name.strip():
             self.db.rename_file(fid, new_name.strip())
             self.refresh()
-
-    def reveal(self) -> None:
-        fid = self._current_file_id()
-        path = self.db.path_of_file(fid) if fid else None
-        if path is None:
-            return
-        if sys.platform.startswith("win"):
-            subprocess.Popen(["explorer", "/select,", str(path)])
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", "-R", str(path)])
-        else:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
 
     def delete_selected(self) -> None:
         ids = self._selected_ids()
@@ -272,7 +256,6 @@ class AttachmentPanel(QWidget):
         menu.addAction("另存为…", self.save_as)
         menu.addAction("重命名…", self.rename)
         menu.addAction("复制名称", self.copy_name)
-        menu.addAction("在资源管理器中显示", self.reveal)
         menu.addSeparator()
         menu.addAction("删除", self.delete_selected)
         menu.exec(self.table.viewport().mapToGlobal(pos))

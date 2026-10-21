@@ -100,7 +100,7 @@ def main() -> int:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
     from core.database import Database
-    from core.storage import cache_root, clear_cache
+    from core.storage import clear_cache
     from ui import style, theme
     from ui.icons import app_icon
     from ui.main_window import MainWindow
@@ -123,7 +123,6 @@ def main() -> int:
     db_file.parent.mkdir(parents=True, exist_ok=True)
     if db_file == app_root() / DEFAULT_NAME:
         migrate_legacy(db_file)
-    cache_root()
 
     db = Database(db_file)
     # 主题跟着库走（存在 meta 里），不再读 %APPDATA%/GuiZang/config.json

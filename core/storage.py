@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import mimetypes
-import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -104,14 +103,8 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def cache_root() -> Path:
-    base = Path(tempfile.gettempdir()) / "GuiZang" / "open"
-    base.mkdir(parents=True, exist_ok=True)
-    return base
-
-
 def clear_cache() -> None:
-    """启动时清理上次留下的临时文件。"""
+    """清理旧版本留在系统临时目录里的释放文件（现在不再释放任何附件）。"""
     root = Path(tempfile.gettempdir()) / "GuiZang"
     if not root.exists():
         return
@@ -121,17 +114,3 @@ def clear_cache() -> None:
             shutil.rmtree(target, ignore_errors=True)
 
 
-def materialize(digest: str, name: str, data: bytes) -> Path:
-    """把 BLOB 释放成临时文件，供系统默认程序打开。"""
-    safe = "".join(c for c in Path(name).name if c not in '\\/:*?"<>|') or "file"
-    folder = cache_root() / digest[:16]
-    folder.mkdir(parents=True, exist_ok=True)
-    target = folder / safe
-    try:
-        if not target.exists() or target.stat().st_size != len(data):
-            tmp = target.with_suffix(target.suffix + ".part")
-            tmp.write_bytes(data)
-            os.replace(tmp, target)
-    except OSError:
-        return target
-    return target

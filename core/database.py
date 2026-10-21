@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .storage import guess_mime, materialize, sha256_bytes
+from .storage import guess_mime, sha256_bytes
 
 SCHEMA_VERSION = 4
 
@@ -507,16 +507,6 @@ class Database:
 
     def get_file(self, file_id: int) -> Optional[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
-
-    def path_of_file(self, file_id: int) -> Optional[Path]:
-        """把附件释放到临时目录后返回路径（用于交给系统程序打开）。"""
-        row = self.get_file(file_id)
-        if row is None or not row["hash"]:
-            return None
-        data = self.blob_bytes(file_id)
-        if data is None:
-            return None
-        return materialize(row["hash"], row["name"], data)
 
     def _insert_file_row(self, node_id: int, name: str, digest: str, size: int) -> int:
         order = self.conn.execute(

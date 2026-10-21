@@ -1123,9 +1123,8 @@ class DatabaseView(QWidget):
     def _open_link(self, url: str) -> None:
         m = re.match(r"gzs:///(\d+)", url or "")
         if m:
-            path = self.db.path_of_file(int(m.group(1)))
-            if path is not None:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+            from ui.open_file import open_attachment
+            open_attachment(self, self.db, int(m.group(1)))
             return
         if url:
             QDesktopServices.openUrl(QUrl(url))
