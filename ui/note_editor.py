@@ -210,6 +210,31 @@ class MarkdownEdit(QTextEdit):
         self._live_timer.setInterval(220)
         self._live_timer.timeout.connect(self._apply_inline_rules_live)
         self.textChanged.connect(self._on_text_changed)
+        # 光标落到空段落时清掉残留字符格式（如上一篇的加粗/标题字号），
+        # 否则空行上按 Ctrl+B 会被判成"取消加粗"，打字没反应。
+        self.cursorPositionChanged.connect(self._sync_empty_line_format)
+        self._sync_empty_line_format()
+
+    def _sync_empty_line_format(self) -> None:
+        """空段落（且非标题/列表/引用/代码块）的打字格式重置为正文基准。"""
+        block = self.textCursor().block()
+        if block.length() > 1:
+            return
+        bf = block.blockFormat()
+        if (int(bf.headingLevel()) or block.textList() is not None
+                or bf.leftMargin() >= 18
+                or bf.background().color().name().lower() in (P["code_bg"], P["quote_bg"])):
+            return
+        fmt = QTextCharFormat()
+        fmt.setFontPointSize(11.0)
+        fmt.setFontWeight(QFont.Normal)
+        fmt.setFontItalic(False)
+        fmt.setFontUnderline(False)
+        fmt.setFontStrikeOut(False)
+        fmt.setForeground(QColor(P["note_text"]))
+        fmt.setFontFamilies(list(UI_FONT_STACK))
+        fmt.setBackground(QBrush(Qt.NoBrush))
+        self.setCurrentCharFormat(fmt)
 
     # ------------------------------------------------------------ 图片
 
@@ -1208,6 +1233,7 @@ class NoteEditor(QWidget):
                 self._set_enabled(True)
                 self.edit.setHtml(content or "")
                 self.edit.moveCursor(QTextCursor.Start)
+                self.edit._sync_empty_line_format()
                 changed = remap_theme_colors(self.edit.document())
                 # 历史笔记里的纯文本 “# 标题” 行：载入时就转成真标题
                 if self.edit.normalize_headings():
