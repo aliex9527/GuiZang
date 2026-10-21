@@ -30,7 +30,12 @@ MONO_STACK = ("Menlo", "Consolas", "Courier New", "monospace")
 
 _IMG_SRC_RE = re.compile(r"gzs:///(\d+)")
 
-HEADING_SIZES = {1: 22.0, 2: 16.5, 3: 13.75, 4: 11.0, 5: 9.6, 6: 9.4}
+# 本地 Typora（GitHub 主题 github.css）实测比例，正文 11pt 视为 1em：
+# h1 2.25em / h2 1.75em / h3 1.5em / h4 1.25em / h5 1em / h6 1em（h6 灰 #777）
+HEADING_SIZES = {1: 24.75, 2: 19.25, 3: 16.5, 4: 13.75, 5: 11.0, 6: 11.0}
+# Typora 行高：h1 1.2 / h2 1.225 / h3 1.43（ProportionalHeight，按百分比）
+HEADING_LINE_HEIGHT = {1: 120, 2: 123, 3: 143}
+HEADING6_COLOR = QColor("#777777")
 _BLANK = r"[ \t\u3000]*$"
 _HEADING_RE = re.compile(r"^(#{1,6})[ \t\u3000]+(.*)$")
 _OL_RE = re.compile(r"^(\d+)\.[ \t\u3000]+(.*)$")
@@ -454,15 +459,18 @@ class MarkdownEdit(QTextEdit):
                         if self._apply_heading(len(m.group(1)), m.group(2)):
                             changed = True
                 elif not in_code and level > 0:
-                    # 已有标题：字号与段间距按当前标准重排（旧笔记里的 20pt/16pt 升级）
+                    # 已有标题：字号/颜色/行高/段间距按当前标准重排（旧笔记升级）
                     want = HEADING_SIZES.get(level, 11.0)
+                    want_color = HEADING6_COLOR if level == 6 else QColor(P["note_text"])
                     it = block.begin()
                     while not it.atEnd():
                         frag = it.fragment()
                         if frag.isValid():
                             cf = frag.charFormat()
                             cur_size = cf.fontPointSize()
-                            if cur_size <= 0 or abs(cur_size - want) > 0.05:
+                            cur_color = cf.foreground().color()
+                            if (cur_size <= 0 or abs(cur_size - want) > 0.05
+                                    or cur_color != want_color):
                                 c = QTextCursor(block)
                                 c.setPosition(frag.position())
                                 c.setPosition(frag.position() + frag.length(),
@@ -470,12 +478,15 @@ class MarkdownEdit(QTextEdit):
                                 nf = QTextCharFormat(cf)
                                 nf.setFontPointSize(want)
                                 nf.setFontWeight(QFont.Bold)
+                                nf.setForeground(want_color)
                                 c.setCharFormat(nf)
                                 changed = True
                         it += 1
                     new_bf = self._space(QTextBlockFormat(bf), level=level)
-                    if (round(new_bf.topMargin(), 1), round(new_bf.bottomMargin(), 1)) != (
-                            round(bf.topMargin(), 1), round(bf.bottomMargin(), 1)):
+                    if ((round(new_bf.topMargin(), 1), round(new_bf.bottomMargin(), 1)) != (
+                            round(bf.topMargin(), 1), round(bf.bottomMargin(), 1))
+                            or int(new_bf.lineHeight()) != int(bf.lineHeight())
+                            or new_bf.lineHeightType() != bf.lineHeightType()):
                         c = QTextCursor(block)
                         c.setBlockFormat(new_bf)
                         changed = True
@@ -741,7 +752,8 @@ class MarkdownEdit(QTextEdit):
         fmt = QTextCharFormat()
         fmt.setFontPointSize(HEADING_SIZES.get(level, 11.0))
         fmt.setFontWeight(QFont.Bold)
-        fmt.setForeground(QColor(P["note_text"]))
+        # Typora github.css: h6 { color: #777 }
+        fmt.setForeground(HEADING6_COLOR if level == 6 else QColor(P["note_text"]))
         fmt.setFontFamilies(list(UI_FONT_STACK))
         return fmt
 
@@ -910,16 +922,12 @@ class MarkdownEdit(QTextEdit):
         bottom = 0
         if kind == "list":
             top = 2
-        elif level == 1:
-            top, bottom = 18, 8
-        elif level == 2:
-            top, bottom = 16, 7
-        elif level == 3:
-            top, bottom = 14, 6
-        elif level == 4:
-            top, bottom = 12, 5
-        elif level >= 5:
-            top, bottom = 10, 4
+        elif level >= 1:
+            # Typora github.css：所有标题 margin 上下对称各 1rem（16px）
+            top, bottom = 16, 16
+            lh = HEADING_LINE_HEIGHT.get(level)
+            if lh:
+                bf.setLineHeight(lh, QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
         else:
             top = 8
         bf.setTopMargin(top)
@@ -1365,8 +1373,11 @@ class NoteEditor(QWidget):
         fmt = QTextCharFormat()
         fmt.setFontPointSize(HEADING_SIZES.get(level, 11.0))
         fmt.setFontWeight(QFont.Bold if level else QFont.Normal)
-        fmt.setForeground(QColor(P["note_text"]))
+        fmt.setForeground(HEADING6_COLOR if level == 6 else QColor(P["note_text"]))
         fmt.setFontFamilies(list(UI_FONT_STACK))
+        if level == 0:
+            # 从标题改回正文：清掉标题行高（SingleHeight 忽略该值）
+            bf.setLineHeight(0, QTextBlockFormat.LineHeightTypes.SingleHeight.value)
         self._apply_format(fmt, whole_block=True)
         self.edit.textCursor().endEditBlock()
 
