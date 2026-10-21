@@ -32,10 +32,10 @@ _IMG_SRC_RE = re.compile(r"gzs:///(\d+)")
 
 HEADING_SIZES = {1: 23.0, 2: 18.0, 3: 14.5, 4: 13.0, 5: 12.0, 6: 11.0}
 _BLANK = r"[ \t\u3000]*$"
-_HEADING_RE = re.compile(r"^(#{1,6})" + _BLANK)
-_OL_RE = re.compile(r"^(\d+)\." + _BLANK)
-_BULLET_RE = re.compile(r"^([-*+])" + _BLANK)
-_QUOTE_RE = re.compile(r"^>" + _BLANK)
+_HEADING_RE = re.compile(r"^(#{1,6})[ \t\u3000]+(.*)$")
+_OL_RE = re.compile(r"^(\d+)\.[ \t\u3000]+(.*)$")
+_BULLET_RE = re.compile(r"^([-*+])[ \t\u3000]+(.*)$")
+_QUOTE_RE = re.compile(r"^>[ \t\u3000]?(.*)$")
 _FENCE_RE2 = re.compile(r"^```" + _BLANK)
 _HR_RE = re.compile(r"^(-{3,}|\*{3,}|_{3,})" + _BLANK)
 
@@ -429,6 +429,39 @@ class MarkdownEdit(QTextEdit):
             self.viewport().update()
         return changed
 
+    def normalize_headings(self) -> bool:
+        """把历史遗留的纯文本 "# 标题" 行转成真标题（跳过代码块与列表）。"""
+        if not self.md_rules:
+            return False
+        doc = self.document()
+        was_modified = doc.isModified()
+        self._applying = True
+        self.blockSignals(True)
+        changed = False
+        try:
+            block = doc.begin()
+            while block.isValid():
+                bf = block.blockFormat()
+                text = block.text()
+                in_code = bf.background().color().name().lower() == P["code_bg"]
+                if (not in_code and bf.headingLevel() == 0
+                        and block.textList() is None and text.startswith("#")):
+                    m = _HEADING_RE.match(text)
+                    if m:
+                        cur = QTextCursor(block)
+                        cur.movePosition(QTextCursor.EndOfBlock)
+                        self.setTextCursor(cur)
+                        if self._apply_heading(len(m.group(1)), m.group(2)):
+                            changed = True
+                block = block.next()
+        finally:
+            self.blockSignals(False)
+            self._applying = False
+            doc.setModified(was_modified)
+        if changed:
+            self.moveCursor(QTextCursor.Start)
+        return changed
+
     def _image_at(self, pos) -> Optional[int]:
         fmt = self.cursorForPosition(pos).charFormat()
         if fmt.isImageFormat():
@@ -535,7 +568,8 @@ class MarkdownEdit(QTextEdit):
         block = self.document().begin()
         while block.isValid():
             text = block.text()
-            if "*" in text or "`" in text or "](" in text or "~~" in text:
+            if ("*" in text or "`" in text or "](" in text or "~~" in text
+                    or text.lstrip().startswith("#")):
                 c = QTextCursor(block)
                 c.movePosition(QTextCursor.EndOfBlock)
                 self.setTextCursor(c)
@@ -677,52 +711,78 @@ class MarkdownEdit(QTextEdit):
             return False
         return self._apply_marker(text)
 
+    def _heading_format(self, level: int) -> QTextCharFormat:
+        fmt = QTextCharFormat()
+        fmt.setFontPointSize(HEADING_SIZES.get(level, 11.0))
+        fmt.setFontWeight(QFont.Bold)
+        fmt.setForeground(QColor(P["note_text"]))
+        fmt.setFontFamilies(list(UI_FONT_STACK))
+        return fmt
+
+    def _apply_heading(self, level: int, content: str) -> bool:
+        """把整行变成标题：去掉 # 记号，正文按标题字号重排（内容不丢）。"""
+        cur = self.textCursor()
+        block = cur.block()
+        c = QTextCursor(block)
+        c.beginEditBlock()
+        c.setPosition(block.position())
+        c.setPosition(block.position() + max(0, block.length() - 1), QTextCursor.KeepAnchor)
+        bf = QTextBlockFormat()
+        bf.setHeadingLevel(level)
+        bf.setLeftMargin(0)
+        bf.setIndent(0)
+        self._space(bf, level=level)
+        c.setBlockFormat(bf)
+        c.insertText(content, self._heading_format(level))
+        c.endEditBlock()
+        c.setPosition(c.block().position() + len(content))
+        self.setTextCursor(c)
+        return True
+
     def _apply_marker(self, text: str) -> bool:
+        # 代码块内的 # - > 都是正文，不能当标记
+        if self.textCursor().blockFormat().background().color().name().lower() == P["code_bg"]:
+            return False
         m = _HEADING_RE.match(text)
         if m:
-            level = len(m.group(1))
-            cur = self._clear_block()
-            bf = cur.blockFormat()
-            bf.setHeadingLevel(level)
-            bf.setLeftMargin(0)
-            bf.setIndent(0)
-            self._space(bf, level=level)
-            cur.setBlockFormat(bf)
-            fmt = QTextCharFormat()
-            fmt.setFontPointSize(HEADING_SIZES.get(level, 11.0))
-            fmt.setFontWeight(QFont.Bold)
-            fmt.setForeground(QColor(P["note_text"]))
-            fmt.setFontFamilies(list(UI_FONT_STACK))
-            cur.setCharFormat(fmt)
-            cur.endEditBlock()
-            self.setTextCursor(cur)
-            return True
+            return self._apply_heading(len(m.group(1)), m.group(2))
 
-        if _BULLET_RE.match(text):
+        m = _BULLET_RE.match(text)
+        if m:
             cur = self._clear_block()
             lf = QTextListFormat()
             lf.setStyle(QTextListFormat.ListDisc)
             lf.setIndent(1)
             cur.createList(lf)
-            cur.setBlockFormat(self._space(cur.blockFormat(), kind="list"))
+            bf = self._space(cur.blockFormat(), kind="list")
+            bf.setHeadingLevel(0)
+            cur.setBlockFormat(bf)
             self._reset_inline(cur)
+            if m.group(2):
+                cur.insertText(m.group(2))
             cur.endEditBlock()
             self.setTextCursor(cur)
             return True
 
-        if _OL_RE.match(text):
+        m = _OL_RE.match(text)
+        if m:
             cur = self._clear_block()
             lf = QTextListFormat()
             lf.setStyle(QTextListFormat.ListDecimal)
             lf.setIndent(1)
             cur.createList(lf)
-            cur.setBlockFormat(self._space(cur.blockFormat(), kind="list"))
+            bf = self._space(cur.blockFormat(), kind="list")
+            bf.setHeadingLevel(0)
+            cur.setBlockFormat(bf)
             self._reset_inline(cur)
+            if m.group(2):
+                cur.insertText(m.group(2))
             cur.endEditBlock()
             self.setTextCursor(cur)
             return True
 
-        if _QUOTE_RE.match(text):
+        m = _QUOTE_RE.match(text)
+        if m:
             cur = self._clear_block()
             bf = cur.blockFormat()
             bf.setLeftMargin(20)
@@ -735,6 +795,8 @@ class MarkdownEdit(QTextEdit):
             fmt.setFontPointSize(11.0)
             fmt.setFontFamilies(list(UI_FONT_STACK))
             cur.setCharFormat(fmt)
+            if m.group(1):
+                cur.insertText(m.group(1), fmt)
             cur.endEditBlock()
             self.setTextCursor(cur)
             return True
@@ -1033,6 +1095,9 @@ class NoteEditor(QWidget):
                 self.edit.setHtml(content or "")
                 self.edit.moveCursor(QTextCursor.Start)
                 changed = remap_theme_colors(self.edit.document())
+                # 历史笔记里的纯文本 “# 标题” 行：载入时就转成真标题
+                if self.edit.normalize_headings():
+                    changed = True
                 # 载入后按当前窗口宽度重排图片（存的是原始像素宽）
                 self.edit.fit_images(allow_grow=True)
         finally:
