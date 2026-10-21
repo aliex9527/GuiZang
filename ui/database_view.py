@@ -590,7 +590,8 @@ class DatabaseView(QWidget):
             lambda c: self.splitter.widget(0).setVisible(c))
         self.act_attach = m.addAction("显示附件栏")
         self.act_attach.setCheckable(True)
-        self.act_attach.setChecked(False)
+        # _restore_state() 可能已经把附件栏恢复了，菜单勾选状态要跟实际可见性一致
+        self.act_attach.setChecked(self.splitter.widget(2).isVisible())
         self.act_attach.triggered.connect(self._toggle_attach_panel)
         m.addSeparator()
         m.addAction("全部展开", self._expand_all)
@@ -647,7 +648,10 @@ class DatabaseView(QWidget):
     def _toggle_attach_panel(self, on: bool) -> None:
         panel = self.splitter.widget(2)
         panel.setVisible(on)
-        self.act_attach.setChecked(on)
+        # 菜单项 act_attach 在 build_menus() 里才创建，而 _restore_state()
+        # 会在那之前调用本方法恢复上次的面板状态，所以要判空
+        if hasattr(self, "act_attach"):
+            self.act_attach.setChecked(on)
         if hasattr(self, "settings"):
             self.settings.setValue("attach_panel", on)
         if on:
@@ -680,9 +684,12 @@ class DatabaseView(QWidget):
         on = self._focus_mode
         self.splitter.widget(0).setVisible(not on)
         self.splitter.widget(2).setVisible(not on)
-        self.act_side.setChecked(not on)
-        self.act_attach.setChecked(not on)
-        self.act_focus.setChecked(on)
+        if hasattr(self, "act_side"):
+            self.act_side.setChecked(not on)
+        if hasattr(self, "act_attach"):
+            self.act_attach.setChecked(not on)
+        if hasattr(self, "act_focus"):
+            self.act_focus.setChecked(on)
 
     def toggle_typewriter(self) -> None:
         self._typewriter = not self._typewriter
