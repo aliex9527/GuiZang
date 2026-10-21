@@ -1,0 +1,4 @@
+PySide6-Essentials>=6.6
+markdown>=3.5
+html2text>=2020.1.16
+Pygments>=2.17

@@ -1,0 +1,103 @@
+"""Markdown ⇄ HTML 转换，供编辑器预览与导出复用。"""
+
+from __future__ import annotations
+
+import re
+from typing import List
+
+import html2text
+import markdown
+
+_TASK_RE = re.compile(r"^(\s*)[-*+]\s+\[([ xX])\]\s+", re.M)
+_FENCE_RE = re.compile(r"<pre>", re.I)
+
+def preview_css() -> str:
+    """编辑器正文（以及预览）使用的 CSS，随主题变化。"""
+    from ui.theme import P
+    return f"""
+body {{ font-family: "PingFang SC", "Microsoft YaHei UI", "Segoe UI", sans-serif; font-size: 11pt;
+       color: {P['note_text']}; }}
+p {{ margin: 0 0 8px 0; line-height: 1.7; }}
+h1 {{ font-size: 20pt; font-weight: 700; margin: 16px 0 8px 0; }}
+h2 {{ font-size: 16pt; font-weight: 700; margin: 14px 0 7px 0; }}
+h3 {{ font-size: 13pt; font-weight: 700; margin: 12px 0 6px 0; }}
+h4 {{ font-size: 11.5pt; font-weight: 700; margin: 10px 0 5px 0; }}
+ul, ol {{ margin: 4px 0 10px 0; }}
+li {{ margin: 2px 0; line-height: 1.65; }}
+code {{ font-family: Consolas, "Cascadia Mono", monospace; font-size: 10pt;
+        background-color: {P['inline_bg']}; color: {P['inline_text']}; }}
+pre {{ font-family: Consolas, "Cascadia Mono", monospace; font-size: 10pt;
+       background-color: {P['code_bg']}; color: {P['code_text']}; }}
+blockquote {{ color: {P['quote_text']}; background-color: {P['quote_bg']}; margin: 8px 0; }}
+a {{ color: {P['link']}; text-decoration: none; }}
+hr {{ color: {P['border']}; }}
+table {{ border-collapse: collapse; margin: 8px 0; }}
+th {{ background-color: {P['table_head_bg']}; font-weight: 700; }}
+th, td {{ border: 1px solid {P['border']}; }}
+img {{ max-width: 100%; }}
+strong {{ font-weight: 700; }}
+"""
+
+
+def _md_engine() -> markdown.Markdown:
+    return markdown.Markdown(
+        extensions=["extra", "sane_lists", "nl2br", "admonition", "codehilite"],
+        extension_configs={
+            "codehilite": {
+                "noclasses": True,
+                "pygments_style": "friendly",
+                "guess_lang": False,
+                "cssclass": "highlight",
+            }
+        },
+        output_format="html",
+    )
+
+
+def _preprocess_task_lists(source: str) -> str:
+    def repl(m: re.Match) -> str:
+        indent, mark = m.group(1), m.group(2)
+        return f"{indent}- {'☑' if mark.lower() == 'x' else '☐'} "
+    return _TASK_RE.sub(repl, source)
+
+
+def md_to_html(source: str) -> str:
+    """Markdown 源码 → HTML 片段（已内联代码高亮配色）。"""
+    if not source or not source.strip():
+        return ""
+    try:
+        engine = _md_engine()
+        html = engine.convert(_preprocess_task_lists(source))
+    except Exception:  # noqa: BLE001 - 渲染失败时退回纯文本，避免编辑器崩
+        from html import escape
+        html = "<pre>" + escape(source) + "</pre>"
+    from ui.theme import P
+    html = html.replace('<div class="highlight">', "<div>")
+    html = _FENCE_RE.sub(f'<pre style="background-color:{P["code_bg"]};">', html)
+    return html
+
+
+def html_to_md(html: str) -> str:
+    """富文本 HTML → Markdown，保留链接与 gzs 内嵌图片。"""
+    if not html or not html.strip():
+        return ""
+    conv = html2text.HTML2Text(baseurl="")
+    conv.body_width = 0
+    conv.ignore_links = False
+    conv.ignore_images = False
+    conv.ignore_emphasis = False
+    conv.single_line_break = False
+    conv.protect_links = True
+    conv.unicode_snob = True
+    try:
+        md = conv.handle(html)
+    except Exception:  # noqa: BLE001
+        return ""
+    md = md.replace("\\_", "_").replace("\\*", "*")
+    md = re.sub(r"^(\s*)[*+-]\s+", lambda m: ("  " * (len(m.group(1)) // 2)) + "- ", md, flags=re.M)
+    md = re.sub(r"\n{3,}", "\n\n", md).strip()
+    return md + "\n"
+
+
+def render_preview(source: str) -> str:
+    return md_to_html(source)
