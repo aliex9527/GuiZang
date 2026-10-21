@@ -18,12 +18,12 @@ def preview_css() -> str:
 body {{ font-family: "PingFang SC", "Microsoft YaHei UI", "Segoe UI", sans-serif; font-size: 11pt;
        color: {P['note_text']}; }}
 p {{ margin: 0 0 8px 0; line-height: 1.7; }}
-h1 {{ font-size: 23pt; font-weight: 700; margin: 16px 0 8px 0; }}
-h2 {{ font-size: 18pt; font-weight: 700; margin: 14px 0 7px 0; }}
-h3 {{ font-size: 14.5pt; font-weight: 700; margin: 12px 0 6px 0; }}
-h4 {{ font-size: 13pt; font-weight: 700; margin: 10px 0 5px 0; }}
-h5 {{ font-size: 12pt; font-weight: 700; margin: 9px 0 4px 0; }}
-h6 {{ font-size: 11pt; font-weight: 700; margin: 8px 0 4px 0; }}
+h1 {{ font-size: 22pt; font-weight: 700; margin: 24px 0 10px 0; }}
+h2 {{ font-size: 16.5pt; font-weight: 700; margin: 20px 0 9px 0; }}
+h3 {{ font-size: 13.75pt; font-weight: 700; margin: 17px 0 8px 0; }}
+h4 {{ font-size: 11pt; font-weight: 700; margin: 14px 0 6px 0; }}
+h5 {{ font-size: 9.6pt; font-weight: 700; margin: 12px 0 5px 0; }}
+h6 {{ font-size: 9.4pt; font-weight: 700; margin: 10px 0 4px 0; }}
 ul, ol {{ margin: 4px 0 10px 0; }}
 li {{ margin: 2px 0; line-height: 1.65; }}
 code {{ font-family: Consolas, "Cascadia Mono", monospace; font-size: 10pt;

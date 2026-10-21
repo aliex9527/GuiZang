@@ -30,7 +30,7 @@ MONO_STACK = ("Menlo", "Consolas", "Courier New", "monospace")
 
 _IMG_SRC_RE = re.compile(r"gzs:///(\d+)")
 
-HEADING_SIZES = {1: 23.0, 2: 18.0, 3: 14.5, 4: 13.0, 5: 12.0, 6: 11.0}
+HEADING_SIZES = {1: 22.0, 2: 16.5, 3: 13.75, 4: 11.0, 5: 9.6, 6: 9.4}
 _BLANK = r"[ \t\u3000]*$"
 _HEADING_RE = re.compile(r"^(#{1,6})[ \t\u3000]+(.*)$")
 _OL_RE = re.compile(r"^(\d+)\.[ \t\u3000]+(.*)$")
@@ -430,7 +430,7 @@ class MarkdownEdit(QTextEdit):
         return changed
 
     def normalize_headings(self) -> bool:
-        """把历史遗留的纯文本 "# 标题" 行转成真标题（跳过代码块与列表）。"""
+        """统一标题：纯文本 "# 行" 转真标题，已有标题的字号/间距拉到当前标准。"""
         if not self.md_rules:
             return False
         doc = self.document()
@@ -444,8 +444,8 @@ class MarkdownEdit(QTextEdit):
                 bf = block.blockFormat()
                 text = block.text()
                 in_code = bf.background().color().name().lower() == P["code_bg"]
-                if (not in_code and bf.headingLevel() == 0
-                        and block.textList() is None and text.startswith("#")):
+                level = int(bf.headingLevel())
+                if not in_code and level == 0 and block.textList() is None and text.startswith("#"):
                     m = _HEADING_RE.match(text)
                     if m:
                         cur = QTextCursor(block)
@@ -453,6 +453,32 @@ class MarkdownEdit(QTextEdit):
                         self.setTextCursor(cur)
                         if self._apply_heading(len(m.group(1)), m.group(2)):
                             changed = True
+                elif not in_code and level > 0:
+                    # 已有标题：字号与段间距按当前标准重排（旧笔记里的 20pt/16pt 升级）
+                    want = HEADING_SIZES.get(level, 11.0)
+                    it = block.begin()
+                    while not it.atEnd():
+                        frag = it.fragment()
+                        if frag.isValid():
+                            cf = frag.charFormat()
+                            cur_size = cf.fontPointSize()
+                            if cur_size <= 0 or abs(cur_size - want) > 0.05:
+                                c = QTextCursor(block)
+                                c.setPosition(frag.position())
+                                c.setPosition(frag.position() + frag.length(),
+                                              QTextCursor.KeepAnchor)
+                                nf = QTextCharFormat(cf)
+                                nf.setFontPointSize(want)
+                                nf.setFontWeight(QFont.Bold)
+                                c.setCharFormat(nf)
+                                changed = True
+                        it += 1
+                    new_bf = self._space(QTextBlockFormat(bf), level=level)
+                    if (round(new_bf.topMargin(), 1), round(new_bf.bottomMargin(), 1)) != (
+                            round(bf.topMargin(), 1), round(bf.bottomMargin(), 1)):
+                        c = QTextCursor(block)
+                        c.setBlockFormat(new_bf)
+                        changed = True
                 block = block.next()
         finally:
             self.blockSignals(False)
@@ -881,18 +907,23 @@ class MarkdownEdit(QTextEdit):
             bf.setTopMargin(7)
             bf.setBottomMargin(7)
             return bf
-        elif kind == "list":
+        bottom = 0
+        if kind == "list":
             top = 2
         elif level == 1:
-            top = 18
+            top, bottom = 18, 8
         elif level == 2:
-            top = 14
+            top, bottom = 16, 7
         elif level == 3:
-            top = 11
+            top, bottom = 14, 6
+        elif level == 4:
+            top, bottom = 12, 5
+        elif level >= 5:
+            top, bottom = 10, 4
         else:
             top = 8
         bf.setTopMargin(top)
-        bf.setBottomMargin(0)
+        bf.setBottomMargin(bottom)
         return bf
 
     def _reset_inline(self, cur: QTextCursor) -> None:
