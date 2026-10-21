@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import (QAction, QActionGroup, QDesktopServices, QFont, QKeySequence,
-                           QShortcut, QTextListFormat)
+from PySide6.QtGui import (QAction, QActionGroup, QDesktopServices, QFont, QImage,
+                           QKeySequence, QShortcut, QTextListFormat)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QDialog,
                                QInputDialog, QMenu,
                                QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
@@ -98,6 +98,7 @@ class DatabaseView(QWidget):
         if app is not None:
             app.installEventFilter(self)
 
+        self._image_size_cache: dict = {}
         self._build_ui()
         self._build_shortcuts()
         self.editor.edit.cursorPositionChanged.connect(self._sync_para_action)
@@ -413,6 +414,8 @@ class DatabaseView(QWidget):
         self.editor.edit.file_sink = self._attach_paths
         self.editor.saveRequested.connect(self._save_note)
         self.editor.edit.linkActivated.connect(self._open_link)
+        self.editor.edit.image_size = self._image_size
+        self.editor.edit.imageActivated.connect(self._open_image)
         self.editor.dirtyChanged.connect(self._set_save_state)
         lay.addWidget(self.editor, 1)
 
@@ -1346,6 +1349,23 @@ class DatabaseView(QWidget):
 
     # ------------------------------------------------------------ 导入导出
 
+    def _image_size(self, fid: int):
+        """图片原始像素尺寸，用于正文按可视宽度排版。"""
+        if fid in self._image_size_cache:
+            return self._image_size_cache[fid]
+        data = self.db.blob_bytes(fid)
+        size = None
+        if data:
+            img = QImage.fromData(data)
+            if not img.isNull():
+                size = (img.width(), img.height())
+        self._image_size_cache[fid] = size
+        return size
+
+    def _open_image(self, fid: int) -> None:
+        from ui.open_file import open_attachment
+        open_attachment(self, self.db, fid)
+
     def _save_image(self, data: bytes, name: str):
         if self._current_id is None:
             return None
@@ -1355,7 +1375,7 @@ class DatabaseView(QWidget):
         from PySide6.QtGui import QImage
         img = QImage.fromData(data)
         width = img.width() if not img.isNull() else 480
-        return f"gzs:///{fid}", min(width, 640)
+        return f"gzs:///{fid}", width
 
     def import_folder(self, parent_id: Optional[int] = None) -> None:
         folder = QFileDialog.getExistingDirectory(self, "选择要导入的文件夹")

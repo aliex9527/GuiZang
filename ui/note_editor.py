@@ -162,15 +162,24 @@ class MarkdownEdit(QTextEdit):
     """正文控件：粘贴图片入库，可选 Markdown 输入规则。"""
 
     linkActivated = Signal(str)
+    imageActivated = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.image_sink: Optional[Callable[[bytes, str], Optional[Tuple[str, int]]]] = None
+        # 图片原始像素尺寸查询（fid -> (w, h)），由资料库侧注入
+        self.image_size: Optional[Callable[[int], Optional[Tuple[int, int]]]] = None
         self.file_sink: Optional[Callable[[list], None]] = None
         self.md_rules = True
         self.setAcceptRichText(True)
         self._applying = False
         self.setMouseTracking(True)
+
+        # 窗口宽度变化后重新排版图片（防抖）
+        self._fit_timer = QTimer(self)
+        self._fit_timer.setSingleShot(True)
+        self._fit_timer.setInterval(180)
+        self._fit_timer.timeout.connect(self.fit_images)
 
         # 停手 220ms 就把光标前已闭合的 Markdown 语法就地渲染
         self._live_timer = QTimer(self)
@@ -201,7 +210,8 @@ class MarkdownEdit(QTextEdit):
         url, width = result
         fmt = QTextImageFormat()
         fmt.setName(url)
-        fmt.setWidth(max(80, min(width, 640)))
+        # 原始像素宽度，只有超出可视宽度时才缩到刚好放得下
+        fmt.setWidth(max(80, min(width, self._avail_width())))
         cur = self.textCursor()
         cur.insertImage(fmt)
         return True
@@ -232,6 +242,85 @@ class MarkdownEdit(QTextEdit):
 
     def canInsertFromMimeData(self, source):  # noqa: N802
         return source.hasImage() or super().canInsertFromMimeData(source)
+
+    # ------------------------------------------------------- 图片排版
+
+    def _avail_width(self) -> int:
+        """正文可视宽度（扣掉左右页边距与滚动条）。"""
+        return max(200, self.viewport().width() - 60)
+
+    @staticmethod
+    def _fid_of(name: str) -> Optional[int]:
+        m = _IMG_SRC_RE.search(name or "")
+        return int(m.group(1)) if m else None
+
+    def _orig_size(self, fmt: QTextImageFormat) -> Optional[Tuple[int, int]]:
+        fid = self._fid_of(fmt.name())
+        if fid is None or self.image_size is None:
+            return None
+        return self.image_size(fid)
+
+    def fit_images(self) -> bool:
+        """按当前可视宽度重排正文图片：小图保持原像素，大图缩到刚好放得下。"""
+        doc = self.document()
+        avail = self._avail_width()
+        was_modified = doc.isModified()
+        self.blockSignals(True)
+        changed = False
+        try:
+            cursor = QTextCursor(doc)
+            block = doc.begin()
+            while block.isValid():
+                it = block.begin()
+                while not it.atEnd():
+                    frag = it.fragment()
+                    if frag.isValid() and frag.charFormat().isImageFormat():
+                        fmt = frag.charFormat().toImageFormat()
+                        size = self._orig_size(fmt)
+                        cur_w = int(round(fmt.width())) if fmt.width() > 0 else 0
+                        if size and size[0] > 0:
+                            target = min(size[0], avail)
+                        elif cur_w > avail:
+                            target = avail
+                        else:
+                            target = cur_w
+                        if target > 0 and target != cur_w:
+                            cursor.setPosition(frag.position())
+                            cursor.setPosition(frag.position() + frag.length(),
+                                               QTextCursor.KeepAnchor)
+                            new_fmt = QTextImageFormat(fmt)
+                            new_fmt.setWidth(target)
+                            if size and size[0] > 0 and size[1] > 0:
+                                new_fmt.setHeight(max(1, round(target * size[1] / size[0])))
+                            cursor.setCharFormat(new_fmt)
+                            changed = True
+                    it += 1
+                block = block.next()
+        finally:
+            doc.setModified(was_modified)
+            self.blockSignals(False)
+        if changed:
+            self.viewport().update()
+        return changed
+
+    def _image_at(self, pos) -> Optional[int]:
+        fmt = self.cursorForPosition(pos).charFormat()
+        if fmt.isImageFormat():
+            return self._fid_of(fmt.toImageFormat().name())
+        return None
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        if getattr(self, "_fit_timer", None) is not None:
+            self._fit_timer.start()
+
+    def mouseDoubleClickEvent(self, event):  # noqa: N802
+        fid = self._image_at(event.pos())
+        if fid is not None:
+            self.imageActivated.emit(fid)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def mousePressEvent(self, event):  # noqa: N802
         if event.modifiers() & Qt.ControlModifier:
@@ -746,6 +835,8 @@ class NoteEditor(QWidget):
                 self.edit.setHtml(content or "")
                 self.edit.moveCursor(QTextCursor.Start)
                 changed = remap_theme_colors(self.edit.document())
+                # 载入后按当前窗口宽度重排图片（存的是原始像素宽）
+                self.edit.fit_images()
         finally:
             self._loading = False
         self._dirty = False
