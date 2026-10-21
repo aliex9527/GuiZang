@@ -114,24 +114,25 @@ class DatabaseView(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # 上部：分类栏 | 正文；下部：附件栏（横向铺开）
+        # 左：分类栏；右侧：正文在上、附件在下（附件栏宽度只跟正文区对齐）
         self.splitter = QSplitter(Qt.Horizontal, self)
         self.splitter.setChildrenCollapsible(False)
         self.splitter.setHandleWidth(1)
         self.splitter.addWidget(self._build_side())
-        self.splitter.addWidget(self._build_editor())
-        self.splitter.setSizes([250, 1010])
-        self.splitter.setStretchFactor(1, 1)
 
         self.vsplitter = QSplitter(Qt.Vertical, self)
         self.vsplitter.setChildrenCollapsible(False)
         self.vsplitter.setHandleWidth(1)
-        self.vsplitter.addWidget(self.splitter)
+        self.vsplitter.addWidget(self._build_editor())
         self.vsplitter.addWidget(self._build_attachments())
         self.vsplitter.setSizes([680, 220])
         self.vsplitter.setStretchFactor(0, 1)
+
+        self.splitter.addWidget(self.vsplitter)
+        self.splitter.setSizes([250, 1010])
+        self.splitter.setStretchFactor(1, 1)
         self.attachments.setVisible(False)
-        outer.addWidget(self.vsplitter, 1)
+        outer.addWidget(self.splitter, 1)
 
         self._set_save_state(False)
 
@@ -424,6 +425,7 @@ class DatabaseView(QWidget):
         self.editor.edit.linkActivated.connect(self._open_link)
         self.editor.edit.image_size = self._image_size
         self.editor.edit.imageActivated.connect(self._open_image)
+        self.editor.edit.imageRemoved.connect(self._drop_removed_image)
         self.editor.dirtyChanged.connect(self._set_save_state)
         lay.addWidget(self.editor, 1)
 
@@ -1121,6 +1123,9 @@ class DatabaseView(QWidget):
         self._syncing_item = False
         self._update_path(node_id)
         self.attachments.set_node(node_id)
+        # 回到编辑界面：按上次的开关恢复附件栏（空状态时会临时收起）
+        if self.settings.value("attach_panel", True, type=bool):
+            self.attachments.setVisible(True)
         self.empty_hint.hide()
         self._apply_icon_theme()
         self._push_nav(node_id)
@@ -1151,6 +1156,7 @@ class DatabaseView(QWidget):
         self._current_id = None
         self.editor.set_node(None)
         self.attachments.set_node(None)
+        self.attachments.setVisible(False)
         self.title_edit.clear()
         self.path_label.clear()
         self.empty_hint.show()
@@ -1371,6 +1377,20 @@ class DatabaseView(QWidget):
                 size = (img.width(), img.height())
         self._image_size_cache[fid] = size
         return size
+
+    def _drop_removed_image(self, fid: int) -> None:
+        """正文里删掉的图片：对应附件记录一起删，附件栏同步消失。"""
+        row = self.db.get_file(fid)
+        if row is None:
+            return
+        # 不校验“是否当前条目”：切条目时追踪会被暂停并清空待删队列，
+        # 能走到这里的必然是刚在当前正文里被删掉的图
+        self.db.delete_file(fid)
+        self._image_size_cache.pop(fid, None)
+        self.editor.edit._image_cache.pop(fid, None)
+        self.attachments.refresh()
+        self._update_counts()
+        self.status_message.emit("已删除正文中移除的图片", 3000)
 
     def _open_image(self, fid: int) -> None:
         from ui.open_file import open_attachment

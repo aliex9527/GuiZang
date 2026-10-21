@@ -16,7 +16,7 @@ from PySide6.QtCore import QByteArray, QBuffer, QIODevice, Qt, QTimer, QUrl, Sig
 from PySide6.QtGui import (QBrush, QColor, QCursor, QFont, QImage, QPalette,
                            QTextBlockFormat, QTextCharFormat, QTextCursor, QTextDocument,
                            QTextImageFormat, QTextListFormat, QTextTableFormat)
-from PySide6.QtWidgets import (QApplication, QFileDialog, QInputDialog, QTextEdit,
+from PySide6.QtWidgets import (QApplication, QFileDialog, QInputDialog, QMenu, QTextEdit,
                                QVBoxLayout, QWidget)
 
 from ui.markdown_render import md_to_html, preview_css
@@ -163,6 +163,8 @@ class MarkdownEdit(QTextEdit):
 
     linkActivated = Signal(str)
     imageActivated = Signal(int)
+    # 正文里的图片被删掉（且没有撤销）时发出，交给资料库删对应附件
+    imageRemoved = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -183,6 +185,16 @@ class MarkdownEdit(QTextEdit):
         self._fit_timer.setSingleShot(True)
         self._fit_timer.setInterval(180)
         self._fit_timer.timeout.connect(self.fit_images)
+
+        # 正文图片追踪：记录文档里出现过的 fid，消失即视为删除
+        self._tracking = True
+        self._doc_fids: set = set()
+        self._auto_fids: set = set()      # 宽度由程序自动决定的图片
+        self._pending_removed: dict = {}   # fid -> QTimer，撤销期内可取消
+        self._scan_timer = QTimer(self)
+        self._scan_timer.setSingleShot(True)
+        self._scan_timer.setInterval(350)
+        self._scan_timer.timeout.connect(self._scan_images)
 
         # 停手 220ms 就把光标前已闭合的 Markdown 语法就地渲染
         self._live_timer = QTimer(self)
@@ -217,6 +229,9 @@ class MarkdownEdit(QTextEdit):
         fmt.setWidth(max(80, min(width, self._avail_width())))
         cur = self.textCursor()
         cur.insertImage(fmt)
+        new_fid = self._fid_of(url)
+        if new_fid is not None:
+            self._auto_fids.add(new_fid)
         self.fit_images()
         return True
 
@@ -292,7 +307,69 @@ class MarkdownEdit(QTextEdit):
         scaled = img.scaled(target, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
         doc.addResource(QTextDocument.ImageResource, QUrl(name), scaled)
 
-    def fit_images(self) -> bool:
+    # --------------------------------------------------- 正文图片与附件同步
+
+    def _collect_fids(self) -> set:
+        fids = set()
+        doc = self.document()
+        block = doc.begin()
+        while block.isValid():
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                if frag.isValid() and frag.charFormat().isImageFormat():
+                    fid = self._fid_of(frag.charFormat().toImageFormat().name())
+                    if fid is not None:
+                        fids.add(fid)
+                it += 1
+            block = block.next()
+        return fids
+
+    def suspend_tracking(self) -> None:
+        """换笔记 / 重载文档期间暂停追踪，否则整篇旧图都会被当成“被删”。"""
+        self._tracking = False
+        self._doc_fids = set()
+        self._auto_fids.clear()
+        for timer in self._pending_removed.values():
+            timer.stop()
+        self._pending_removed.clear()
+
+    def resume_tracking(self) -> None:
+        self._doc_fids = self._collect_fids()
+        self._tracking = True
+
+    def _scan_images(self) -> None:
+        if not self._tracking:
+            return
+        current = self._collect_fids()
+        # 撤销把图撤回来了：取消待删除
+        for fid, timer in list(self._pending_removed.items()):
+            if fid in current:
+                timer.stop()
+                del self._pending_removed[fid]
+        gone = self._doc_fids - current
+        self._doc_fids = current
+        for fid in gone:
+            self._schedule_drop(fid)
+
+    def _schedule_drop(self, fid: int) -> None:
+        """延迟确认删除：留出 Ctrl+Z 的撤销时间。"""
+        if fid in self._pending_removed:
+            return
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(1500)
+
+        def fire() -> None:
+            self._pending_removed.pop(fid, None)
+            if fid not in self._doc_fids:
+                self.imageRemoved.emit(fid)
+
+        timer.timeout.connect(fire)
+        self._pending_removed[fid] = timer
+        timer.start()
+
+    def fit_images(self, allow_grow: bool = False) -> bool:
         """按当前可视宽度重排正文图片：小图保持原像素，大图缩到刚好放得下。"""
         doc = self.document()
         avail = self._avail_width()
@@ -315,8 +392,18 @@ class MarkdownEdit(QTextEdit):
                         if size is None and orig is not None:
                             size = (orig.width(), orig.height())
                         cur_w = int(round(fmt.width())) if fmt.width() > 0 else 0
-                        if size and size[0] > 0:
-                            target = min(size[0], avail)
+                        auto_w = min(size[0], avail) if size and size[0] > 0 else cur_w
+                        auto = (cur_w <= 0) or (fid in self._auto_fids)
+                        if allow_grow and size and size[0] > 0:
+                            # 首次载入：历史上被限宽的 640 与满宽值都算自动宽度
+                            if cur_w == 640 and size[0] > 640:
+                                auto = True
+                            elif abs(cur_w - auto_w) <= 2:
+                                auto = True
+                        if auto and size and size[0] > 0:
+                            target = auto_w
+                            if fid is not None:
+                                self._auto_fids.add(fid)
                         elif cur_w > avail:
                             target = avail
                         else:
@@ -347,6 +434,72 @@ class MarkdownEdit(QTextEdit):
         if fmt.isImageFormat():
             return self._fid_of(fmt.toImageFormat().name())
         return None
+
+    def _image_hit(self, pos):
+        """命中图片时返回 (fid, 起始位置, 长度, 图片格式)。"""
+        cursor = self.cursorForPosition(pos)
+        fmt = cursor.charFormat()
+        if not fmt.isImageFormat():
+            return None
+        img_fmt = fmt.toImageFormat()
+        fid = self._fid_of(img_fmt.name())
+        if fid is None:
+            return None
+        return fid, cursor.position(), 1, img_fmt
+
+    def _resize_image(self, start: int, length: int, fmt: QTextImageFormat, width: int) -> None:
+        """改正文里这张图的显示宽度，等比缩放并同步高质量资源。"""
+        fid = self._fid_of(fmt.name())
+        orig = self._orig_image(fid) if fid is not None else None
+        doc = self.document()
+        cursor = QTextCursor(doc)
+        cursor.setPosition(start)
+        cursor.setPosition(start + length, QTextCursor.KeepAnchor)
+        new_fmt = QTextImageFormat(fmt)
+        new_fmt.setWidth(int(max(48, width)))
+        if orig is not None and orig.width() > 0:
+            new_fmt.setHeight(max(1, round(new_fmt.width() * orig.height() / orig.width())))
+            self._swap_resource(doc, fmt.name(), orig, int(new_fmt.width()))
+        if fid is not None:
+            self._auto_fids.discard(fid)   # 手动定过尺寸，窗口变化时不再自动改
+        cursor.setCharFormat(new_fmt)
+        self.setFocus()
+
+    def _remove_image(self, start: int, length: int) -> None:
+        cursor = QTextCursor(self.document())
+        cursor.setPosition(start)
+        cursor.setPosition(start + length, QTextCursor.KeepAnchor)
+        cursor.removeSelectedText()
+
+    def contextMenuEvent(self, event):  # noqa: N802
+        hit = self._image_hit(event.pos())
+        if hit is None:
+            super().contextMenuEvent(event)
+            return
+        fid, start, length, fmt = hit
+        orig = self._orig_image(fid)
+        menu = QMenu(self)
+        act_view = menu.addAction("看大图（双击）")
+        act_view.triggered.connect(lambda _c=False: self.imageActivated.emit(fid))
+        menu.addSeparator()
+        if orig is not None:
+            ow = orig.width()
+            act_raw = menu.addAction(f"原始大小（{ow} px）")
+            act_raw.triggered.connect(
+                lambda _c=False: self._resize_image(start, length, fmt, ow))
+            act_fit = menu.addAction("适应窗口宽度")
+            act_fit.triggered.connect(
+                lambda _c=False: self._resize_image(start, length, fmt, self._avail_width()))
+            menu.addSeparator()
+            for pct in (150, 125, 100, 75, 50, 33):
+                act = menu.addAction(f"{pct}%")
+                act.triggered.connect(
+                    lambda _c=False, p=pct: self._resize_image(
+                        start, length, fmt, max(48, round(ow * p / 100))))
+            menu.addSeparator()
+        act_del = menu.addAction("删除图片（同时删除附件）")
+        act_del.triggered.connect(lambda _c=False: self._remove_image(start, length))
+        menu.exec(event.globalPos())
 
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
@@ -395,6 +548,9 @@ class MarkdownEdit(QTextEdit):
             self.setTextCursor(c)
 
     def _on_text_changed(self) -> None:
+        scan = getattr(self, "_scan_timer", None)
+        if scan is not None and not self._applying:
+            scan.start()
         if self.md_rules and not self._applying:
             self._live_timer.start()
 
@@ -866,6 +1022,8 @@ class NoteEditor(QWidget):
         self.flush()
         self._node_id = node_id
         self._loading = True
+        # 换文档期间不追踪：否则旧笔记的图会被当成“被删掉”
+        self.edit.suspend_tracking()
         try:
             if node_id is None:
                 self._set_enabled(False)
@@ -876,9 +1034,10 @@ class NoteEditor(QWidget):
                 self.edit.moveCursor(QTextCursor.Start)
                 changed = remap_theme_colors(self.edit.document())
                 # 载入后按当前窗口宽度重排图片（存的是原始像素宽）
-                self.edit.fit_images()
+                self.edit.fit_images(allow_grow=True)
         finally:
             self._loading = False
+        self.edit.resume_tracking()
         self._dirty = False
         self.dirtyChanged.emit(False)
         if changed:
