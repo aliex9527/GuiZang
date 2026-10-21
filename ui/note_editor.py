@@ -48,12 +48,15 @@ _MD_BLOCK_RE = re.compile(
     r"(^|\n)[ \t]{0,3}(#{1,6}\s|[-*+]\s|\d+\.\s|>\s|```|\|.+\|)")
 
 _TASK_PREFIX_RE = re.compile(r"^([☐☑])\s+")
+_TASK_INPUT_RE = re.compile(r"^[-*+][ \t\u3000]+\[([ xX])\][ \t\u3000]+(.*)$")
+_URL_RE = re.compile(r"https?://[^\s\u4e00-\u9fff\uff0c\u3002\uff1b\uff1a\u201c\u201d\uff08\uff09\u3001\uff1f\uff01]+", re.IGNORECASE)
 
 _INLINE_RULES = [
     (re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*"), "bold"),
     (re.compile(r"(?<!\*)\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?!\*)"), "italic"),
     (re.compile(r"~~(?=\S)(.+?)(?<=\S)~~"), "strike"),
     (re.compile(r"`([^`\n]+)`"), "code"),
+    (re.compile(r"==(?=\S)(.+?)(?<=\S)=="), "highlight"),
     (re.compile(r"\[([^\]\n]+)\]\(([^)\s]+)\)"), "link"),
 ]
 
@@ -606,7 +609,7 @@ class MarkdownEdit(QTextEdit):
         while block.isValid():
             text = block.text()
             if ("*" in text or "`" in text or "](" in text or "~~" in text
-                    or text.lstrip().startswith("#")):
+                    or "==" in text or text.lstrip().startswith("#")):
                 c = QTextCursor(block)
                 c.movePosition(QTextCursor.EndOfBlock)
                 self.setTextCursor(c)
@@ -638,6 +641,8 @@ class MarkdownEdit(QTextEdit):
             fmt.setFontFixedPitch(True)
             fmt.setBackground(QColor(P["inline_bg"]))
             fmt.setForeground(QColor(P["inline_text"]))
+        elif kind == "highlight":
+            fmt.setBackground(QColor("#fff59d"))
         elif kind == "link":
             fmt.setAnchor(True)
             fmt.setAnchorHref(url)
@@ -700,23 +705,7 @@ class MarkdownEdit(QTextEdit):
                     for m in pattern.finditer(text):
                         if m.end() != pos:
                             continue
-                        fmt = QTextCharFormat()
-                        if kind == "bold":
-                            fmt.setFontWeight(QFont.Bold)
-                        elif kind == "italic":
-                            fmt.setFontItalic(True)
-                        elif kind == "strike":
-                            fmt.setFontStrikeOut(True)
-                        elif kind == "code":
-                            fmt.setFontFamilies(list(MONO_STACK))
-                            fmt.setFontFixedPitch(True)
-                            fmt.setBackground(QColor(P["inline_bg"]))
-                            fmt.setForeground(QColor(P["inline_text"]))
-                        elif kind == "link":
-                            fmt.setAnchor(True)
-                            fmt.setAnchorHref(m.group(2))
-                            fmt.setForeground(QColor(P["link"]))
-                            fmt.setFontUnderline(True)
+                        fmt = self._format_for(kind, m.group(2) if kind == "link" else "")
                         c = QTextCursor(block)
                         c.setPosition(block.position() + m.start())
                         c.setPosition(block.position() + m.end(), QTextCursor.KeepAnchor)
@@ -729,6 +718,72 @@ class MarkdownEdit(QTextEdit):
                     break
         finally:
             self._applying = False
+
+    def _autolink(self) -> bool:
+        """Typora 自动链接：空格/回车时把光标前的裸 URL 转成可点链接。"""
+        cur = self.textCursor()
+        block = cur.block()
+        if block.blockFormat().background().color().name().lower() == P["code_bg"]:
+            return False
+        text = block.text()
+        pos = cur.positionInBlock()
+        start = pos
+        while start > 0 and text[start - 1] not in " \t\u3000":
+            start -= 1
+        word = text[start:pos]
+        if len(word) < 8 or not _URL_RE.fullmatch(word):
+            return False
+        fmt = QTextCharFormat()
+        fmt.setAnchor(True)
+        fmt.setAnchorHref(word)
+        fmt.setForeground(QColor(P["link"]))
+        fmt.setFontUnderline(True)
+        c = QTextCursor(block)
+        c.setPosition(block.position() + start)
+        c.setPosition(block.position() + pos, QTextCursor.KeepAnchor)
+        c.setCharFormat(fmt)
+        return True
+
+    _TABLE_SEP_RE = re.compile(r"^:?-{3,}:?$")
+
+    def _try_table_rule(self) -> bool:
+        """Typora：整行 |a|b|c| 回车 → 生成 2 行表格，首行为加粗表头。"""
+        cur = self.textCursor()
+        block = cur.block()
+        text = block.text()
+        if cur.positionInBlock() != len(text) or not text.startswith("|"):
+            return False
+        m = re.match(r"^\|(.+)\|[ \t\u3000]*$", text)
+        if not m:
+            return False
+        cells = [c.strip() for c in m.group(1).split("|")]
+        if not cells or any(not c for c in cells):
+            return False
+        if all(self._TABLE_SEP_RE.match(c) for c in cells):
+            return False   # |---|---| 分隔行不当表格
+        ncols = len(cells)
+        c = QTextCursor(block)
+        c.beginEditBlock()
+        tf = QTextTableFormat()
+        tf.setBorder(1)
+        tf.setBorderBrush(QBrush(QColor(P["border"])))
+        tf.setBorderStyle(QTextTableFormat.BorderStyle_Solid)
+        tf.setCellPadding(6)
+        tf.setCellSpacing(0)
+        tf.setBorderCollapse(True)
+        c.setPosition(block.position())
+        c.setPosition(block.position() + max(0, block.length() - 1), QTextCursor.KeepAnchor)
+        c.removeSelectedText()
+        table = c.insertTable(2, ncols, tf)
+        for i, cell in enumerate(cells):
+            fmt = QTextCharFormat()
+            fmt.setFontWeight(QFont.Bold)
+            fmt.setFontPointSize(11.0)
+            table.cellAt(0, i).firstCursorPosition().insertText(cell, fmt)
+        first = table.cellAt(1, 0).firstCursorPosition()
+        c.endEditBlock()
+        self.setTextCursor(first)
+        return True
 
     def _clear_block(self) -> Optional[QTextCursor]:
         cur = self.textCursor()
@@ -784,6 +839,19 @@ class MarkdownEdit(QTextEdit):
         m = _HEADING_RE.match(text)
         if m:
             return self._apply_heading(len(m.group(1)), m.group(2))
+
+        m = _TASK_INPUT_RE.match(text)
+        if m:
+            # Typora：- [ ] 任务 / - [x] 已完成 → ☐/☑ 前缀任务项
+            cur = self._clear_block()
+            bf = self._space(cur.blockFormat())
+            bf.setHeadingLevel(0)
+            cur.setBlockFormat(bf)
+            self._reset_inline(cur)
+            cur.insertText(("☑ " if m.group(1).lower() == "x" else "☐ ") + m.group(2))
+            cur.endEditBlock()
+            self.setTextCursor(cur)
+            return True
 
         m = _BULLET_RE.match(text)
         if m:
@@ -989,6 +1057,7 @@ class MarkdownEdit(QTextEdit):
         ctrl = bool(event.modifiers() & Qt.ControlModifier)
 
         if key == Qt.Key_Space and not ctrl:
+            self._autolink()
             self._apply_inline_rules()
             if self._try_block_rule():
                 event.accept()
@@ -997,6 +1066,7 @@ class MarkdownEdit(QTextEdit):
             return
 
         if key in (Qt.Key_Return, Qt.Key_Enter) and not ctrl:
+            self._autolink()
             self._apply_inline_rules()
             cur = self.textCursor()
             block = cur.block()
@@ -1015,6 +1085,11 @@ class MarkdownEdit(QTextEdit):
             # 空行结束代码块 / 引用：就地转换，不新增行
             if (in_code and empty) or (quote and empty):
                 self._leave_block_format(in_code)
+                event.accept()
+                return
+
+            # Typora：|a|b|c| 整行回车 → 生成表格
+            if not in_code and self._try_table_rule():
                 event.accept()
                 return
 
@@ -1362,12 +1437,19 @@ class NoteEditor(QWidget):
         self.edit.setTextCursor(cur)
 
     def set_heading(self, level: int) -> None:
+        # Typora 行为：光标已是该级标题时再按同一快捷键 → 切回正文
+        cur_level = int(self.edit.textCursor().blockFormat().headingLevel())
+        if level and cur_level == level:
+            level = 0
         self.edit.textCursor().beginEditBlock()
         cur = self.edit.textCursor()
         bf = cur.blockFormat()
         bf.setHeadingLevel(max(0, level))
         bf.setLeftMargin(0 if level else bf.leftMargin())
         bf.setIndent(0)
+        if level == 0:
+            # 从标题改回正文：清掉标题行高（SingleHeight 忽略该值）
+            bf.setLineHeight(0, QTextBlockFormat.LineHeightTypes.SingleHeight.value)
         cur.setBlockFormat(bf)
 
         fmt = QTextCharFormat()
@@ -1375,9 +1457,6 @@ class NoteEditor(QWidget):
         fmt.setFontWeight(QFont.Bold if level else QFont.Normal)
         fmt.setForeground(HEADING6_COLOR if level == 6 else QColor(P["note_text"]))
         fmt.setFontFamilies(list(UI_FONT_STACK))
-        if level == 0:
-            # 从标题改回正文：清掉标题行高（SingleHeight 忽略该值）
-            bf.setLineHeight(0, QTextBlockFormat.LineHeightTypes.SingleHeight.value)
         self._apply_format(fmt, whole_block=True)
         self.edit.textCursor().endEditBlock()
 

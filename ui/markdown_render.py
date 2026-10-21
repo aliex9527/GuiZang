@@ -10,6 +10,9 @@ import markdown
 
 _TASK_RE = re.compile(r"^(\s*)[-*+]\s+\[([ xX])\]\s+", re.M)
 _FENCE_RE = re.compile(r"<pre>", re.I)
+_HL_RE = re.compile(r"==(?=\S)(.+?)(?<=\S)==")
+_CODE_SPAN_RE = re.compile(r"`[^`\n]+`")
+_FENCE_SPLIT_RE = re.compile(r"(```.*?(?:```|\Z))", re.S)
 
 def preview_css() -> str:
     """编辑器正文（以及预览）使用的 CSS，随主题变化。"""
@@ -38,6 +41,7 @@ th {{ background-color: {P['table_head_bg']}; font-weight: 700; }}
 th, td {{ border: 1px solid {P['border']}; }}
 img {{ max-width: 100%; }}
 strong {{ font-weight: 700; }}
+mark {{ background-color: #fff59d; color: {P['note_text']}; padding: 0 2px; }}
 """
 
 
@@ -63,13 +67,33 @@ def _preprocess_task_lists(source: str) -> str:
     return _TASK_RE.sub(repl, source)
 
 
+def _hl_outside_code(seg: str) -> str:
+    """把 ==高亮== 换成 <mark>，跳过行内代码 `...`。"""
+    out, last = [], 0
+    for m in _CODE_SPAN_RE.finditer(seg):
+        out.append(_HL_RE.sub(r"<mark>\1</mark>", seg[last:m.start()]))
+        out.append(m.group(0))
+        last = m.end()
+    out.append(_HL_RE.sub(r"<mark>\1</mark>", seg[last:]))
+    return "".join(out)
+
+
+def _preprocess_highlight(source: str) -> str:
+    """==高亮== → <mark>；围栏代码块（```）内不动。"""
+    parts = _FENCE_SPLIT_RE.split(source)
+    for i, seg in enumerate(parts):
+        if i % 2 == 0:  # 偶数段是普通文本，奇数段是围栏代码块
+            parts[i] = "\n".join(_hl_outside_code(line) for line in seg.split("\n"))
+    return "".join(parts)
+
+
 def md_to_html(source: str) -> str:
     """Markdown 源码 → HTML 片段（已内联代码高亮配色）。"""
     if not source or not source.strip():
         return ""
     try:
         engine = _md_engine()
-        html = engine.convert(_preprocess_task_lists(source))
+        html = engine.convert(_preprocess_task_lists(_preprocess_highlight(source)))
     except Exception:  # noqa: BLE001 - 渲染失败时退回纯文本，避免编辑器崩
         from html import escape
         html = "<pre>" + escape(source) + "</pre>"
