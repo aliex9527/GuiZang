@@ -26,6 +26,10 @@ LIGHT: Dict[str, str] = {
     "white": "#ffffff",
     "shadow": "#d3d8e3",
     "shadow_hover": "#b9c1d1",
+    # 分类树（myBase 风格：整行实心蓝条 + 白字 + 层级虚线）
+    "select_bg": "#0078d4",
+    "select_fg": "#ffffff",
+    "branch": "#c9ced8",
     # 正文
     "note_text": "#1f2430",
     "code_bg": "#f6f8fa",
@@ -56,6 +60,10 @@ DARK: Dict[str, str] = {
     "white": "#21252e",
     "shadow": "#3a4150",
     "shadow_hover": "#4a5263",
+    # 分类树（myBase 风格：整行实心蓝条 + 白字 + 层级虚线）
+    "select_bg": "#1f6feb",
+    "select_fg": "#ffffff",
+    "branch": "#3a4150",
     # 正文
     "note_text": "#e4e7ee",
     "code_bg": "#171a21",

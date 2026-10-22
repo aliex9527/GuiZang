@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import (QAction, QActionGroup, QDesktopServices, QFont, QImage,
-                           QKeySequence, QShortcut, QTextListFormat)
+from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices, QFont,
+                           QImage, QKeySequence, QPainter, QPainterPath, QPalette,
+                           QPen, QShortcut, QTextListFormat)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QDialog,
                                QInputDialog, QMenu,
                                QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
@@ -53,11 +54,71 @@ class InstantToolButton(QToolButton):
 
 
 class CategoryTree(QTreeWidget):
+    """myBase 风格的分类树：层级虚线 + 整行实心蓝条 + 展开三角。"""
+
     structureChanged = Signal()
 
     def dropEvent(self, event):  # noqa: N802
         super().dropEvent(event)
         self.structureChanged.emit()
+
+    def drawBranches(self, painter, rect, index):  # noqa: N802
+        """自绘缩进区的虚线连接与展开标记。
+
+        Qt 默认的 branch 绘制会被样式表接管成"一块实心色"，这里整段接管：
+        选中行连缩进一起填蓝，层级用竖直点线串起来，末级画 └ 拐到条目。
+        """
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+
+        model = self.model()
+        sel_model = self.selectionModel()
+        selected = bool(sel_model is not None and sel_model.isSelected(index))
+
+        chain = [index]
+        parent = index.parent()
+        while parent.isValid():
+            chain.insert(0, parent)
+            parent = parent.parent()
+        depth = len(chain) - 1
+
+        ind = self.indentation()
+        mid = ind // 2
+        mid_y = rect.top() + rect.height() // 2
+        line = QColor(P["select_fg"] if selected else P["branch"])
+        if selected:
+            line.setAlpha(150)      # 蓝底上别用实白白，会抢视线
+        painter.setPen(QPen(line, 1, Qt.PenStyle.DotLine))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        for lv in range(depth):
+            x = rect.left() + lv * ind + mid
+            node = chain[lv]
+            if model.rowCount(node.parent()) > node.row() + 1:
+                # 这一层后面还有兄弟，竖线贯穿整行
+                painter.drawLine(x, rect.top(), x, rect.bottom())
+            if lv == depth - 1:
+                painter.drawLine(x, rect.top(), x, mid_y)
+                painter.drawLine(x, mid_y, x + mid, mid_y)
+
+        if model.rowCount(index) > 0:
+            cx = rect.left() + depth * ind + mid
+            cy = mid_y
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(P["select_fg"]) if selected else line)
+            arrow = QPainterPath()
+            if self.isExpanded(index):
+                arrow.moveTo(cx - 3.5, cy - 2.0)
+                arrow.lineTo(cx + 3.5, cy - 2.0)
+                arrow.lineTo(cx, cy + 2.5)
+            else:
+                arrow.moveTo(cx - 2.0, cy - 3.5)
+                arrow.lineTo(cx - 2.0, cy + 3.5)
+                arrow.lineTo(cx + 2.5, cy)
+            arrow.closeSubpath()
+            painter.drawPath(arrow)
+
+        painter.restore()
 
 
 class DatabaseView(QWidget):
@@ -189,14 +250,13 @@ class DatabaseView(QWidget):
         return wrap
 
     def _sync_tree_palette(self) -> None:
-        """让树的原生高亮（装饰区、拖放指示）也用主题浅蓝，而不是系统实心蓝。"""
-        from PySide6.QtGui import QColor, QPalette
+        """让树的原生绘制（拖放指示、焦点框）也用上我们的选中配色。"""
         pal = self.tree.palette()
-        soft = QColor(P["accent_soft"])
-        accent = QColor(P["accent"])
+        select_bg = QColor(P["select_bg"])
+        select_fg = QColor(P["select_fg"])
         for group in (QPalette.Active, QPalette.Inactive):
-            pal.setColor(group, QPalette.Highlight, soft)
-            pal.setColor(group, QPalette.HighlightedText, accent)
+            pal.setColor(group, QPalette.Highlight, select_bg)
+            pal.setColor(group, QPalette.HighlightedText, select_fg)
             pal.setColor(group, QPalette.Base, QColor(P["panel"]))
             pal.setColor(group, QPalette.Window, QColor(P["panel"]))
         self.tree.setPalette(pal)
@@ -1021,6 +1081,7 @@ class DatabaseView(QWidget):
         self._loading_tree = True
         self.tree.clear()
         self._items.clear()
+        self._icon_selected_item = None   # 旧 item 已被销毁，别留着下次访问
 
         rows = self.db.all_nodes()
         by_parent: Dict[Optional[int], list] = defaultdict(list)
@@ -1052,6 +1113,7 @@ class DatabaseView(QWidget):
         self._loading_tree = False
 
         if prev is not None and prev in self._items:
+            self.tree.setCurrentItem(self._items[prev])
             self._select_node(prev, from_tree=True)
         elif self.tree.topLevelItemCount():
             first = self.tree.topLevelItem(0)
@@ -1059,13 +1121,22 @@ class DatabaseView(QWidget):
         else:
             self._show_empty_state()
 
+    def _paint_icon(self, item: QTreeWidgetItem) -> None:
+        """选中项用白图标，其余用原色 —— 深蓝底上彩色小图标会糊成一团。"""
+        starred = bool(item.data(0, Qt.UserRole + 1))
+        on = item.isSelected()
+        if item.childCount() > 0:
+            item.setIcon(0, folder_icon(36, color="#ffffff" if on else "#f0b429",
+                                        starred=starred))
+        else:
+            item.setIcon(0, leaf_icon(36, color="#ffffff" if on else "#9aa4b8",
+                                      starred=starred))
+
     def _refresh_icons(self) -> None:
         self._syncing_item = True
         try:
             for item in self._items.values():
-                starred = bool(item.data(0, Qt.UserRole + 1))
-                item.setIcon(0, folder_icon(36, starred=starred)
-                             if item.childCount() > 0 else leaf_icon(36, starred=starred))
+                self._paint_icon(item)
         finally:
             self._syncing_item = False
 
@@ -1118,6 +1189,17 @@ class DatabaseView(QWidget):
 
     def _on_tree_selection(self) -> None:
         items = self.tree.selectedItems()
+        prev = getattr(self, "_icon_selected_item", None)
+        cur = items[0] if items else None
+        if prev is not cur:
+            self._syncing_item = True
+            try:
+                for it in (prev, cur):
+                    if it is not None:
+                        self._paint_icon(it)
+            finally:
+                self._syncing_item = False
+            self._icon_selected_item = cur
         if not items:
             return
         nid = items[0].data(0, ROLE_ID)

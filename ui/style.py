@@ -14,6 +14,8 @@ def qss() -> str:
     ACCENT = P["accent"]
     ACCENT_SOFT = P["accent_soft"]
     ACCENT_LINE = P["accent_line"]
+    SELECT_BG = P["select_bg"]
+    SELECT_FG = P["select_fg"]
     HOVER = P["hover"]
     ROW_HOVER = P["row_hover"]
     SUBTLE = P["subtle"]
@@ -202,22 +204,22 @@ QTreeWidget {{
     background: {PANEL};
     border: none;
     outline: none;
-    /* 关掉"装饰区跟随选中"：否则选中行的缩进/分支区会被系统高亮色
-       涂成一整块实心蓝方块（QSS 的 ::item 背景盖不到这块）。 */
+    /* 装饰区（缩进/分支线）由 CategoryTree.drawBranches 自绘：
+       这里关掉样式自带的"装饰区跟随选中"，避免系统色抢在我们上面涂一层。 */
     show-decoration-selected: 0;
 }}
 QTreeWidget::item {{
     height: 30px;
     padding: 1px 2px;
-    border-radius: 6px;
+    border-radius: 0;
     color: {TEXT};
 }}
 QTreeWidget::item:hover {{
     background: {ROW_HOVER};
 }}
 QTreeWidget::item:selected {{
-    background: {ACCENT_SOFT};
-    color: {ACCENT};
+    background: {SELECT_BG};
+    color: {SELECT_FG};
 }}
 QTreeWidget::branch {{
     background: transparent;
