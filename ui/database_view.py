@@ -13,8 +13,9 @@ from typing import Dict, Optional
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices, QFont,
-                           QImage, QKeySequence, QPainter, QPainterPath, QPalette,
-                           QPen, QShortcut, QTextListFormat)
+                           QImage, QKeyEvent, QKeySequence, QPainter,
+                           QPainterPath, QPalette, QPen, QShortcut,
+                           QTextListFormat)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QDialog,
                                QDialogButtonBox, QInputDialog, QMenu,
                                QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
@@ -37,6 +38,30 @@ from ui.search_panel import SearchPanel
 from ui.theme import P
 
 ROLE_ID = Qt.UserRole
+
+# Typora（Windows 版）的整套组合键。这里既是 QShortcut 的绑定表，
+# 也是 F1 一览里"段落/格式"两组的来源 —— 保证"表里写了的真的能按"。
+TYPORA_KEYS = [
+    # 无修饰
+    "F1", "F8", "F9", "F11",
+    # 条目操作
+    "Ctrl+Alt+Up", "Ctrl+Alt+Down", "Ctrl+Alt+N",
+    "Ctrl+Shift+S", "Ctrl+Shift+N", "Ctrl+Shift+A",
+    # 标题
+    "Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5", "Ctrl+6", "Ctrl+0",
+    "Ctrl+=", "Ctrl+-",
+    # 段落
+    "Ctrl+T", "Ctrl+Shift+K", "Ctrl+Shift+Q",
+    "Ctrl+Shift+[", "Ctrl+Shift+]", "Ctrl+Shift+X",
+    "Ctrl+Shift+Return", "Ctrl+Shift+Up", "Ctrl+Shift+Down",
+    "Ctrl+]", "Ctrl+[", "Ctrl+Shift+0",
+    # 行内格式
+    "Ctrl+B", "Ctrl+I", "Ctrl+U", "Alt+Shift+5", "Ctrl+Shift+5",
+    "Ctrl+Shift+`", "Ctrl+Shift+H", "Ctrl+K", "Ctrl+Shift+I",
+    "Ctrl+\\", "Ctrl+Shift+C", "Ctrl+Shift+V",
+    # 视图
+    "Ctrl+/", "Ctrl+D",
+]
 
 
 class InstantToolButton(QToolButton):
@@ -573,6 +598,33 @@ class DatabaseView(QWidget):
             sc.setContext(Qt.WindowShortcut)
             sc.activated.connect(slot)
 
+        # ---- Typora 全量组合键：走 Qt 原生 shortcut 通道
+        #
+        # 之前只在 QApplication 事件过滤器里认 KeyPress，这条路会被控件/输入法
+        # 提前吃掉（编辑器没焦点、焦点在标题框、窗格被空状态遮住时就会出现
+        # "按了没反应"）。QShortcut 是在 ShortcutOverride 阶段裁决的，
+        # 与焦点、与控件无关，只要窗口是活动窗口就一定到。
+        # 两路互斥：shortcut 命中后 KeyPress 不再下发，不会重复执行。
+        for seq in TYPORA_KEYS:
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.setContext(Qt.ApplicationShortcut)
+            sc.setAutoRepeat(False)
+            sc.activated.connect(lambda s=sc.key(): self._dispatch_shortcut(s))
+
+    def _dispatch_shortcut(self, ks) -> None:
+        """把命中的 QShortcut 转成一次按键，交给统一的快捷键分发器。"""
+        if not self.isVisible():
+            return                       # 多标签库里只有当前视图该响应
+        if QApplication.activeModalWidget() is not None:
+            return
+        if isinstance(ks, str):
+            ks = QKeySequence(ks)
+        if ks.count() == 0:
+            return
+        c = ks[0]
+        ev = QKeyEvent(QEvent.KeyPress, c.key(), c.keyboardModifiers())
+        self._handle_shortcut(ev)
+
     def build_menus(self, mb) -> None:
         """菜单与快捷键对齐 Typora（Windows 版）。"""
         mb.setNativeMenuBar(False)
@@ -683,12 +735,13 @@ class DatabaseView(QWidget):
         m.addAction("在上方插入段落\tCtrl+Shift+Up", lambda: ed.insert_paragraph(True))
         m.addAction("在下方插入段落\tCtrl+Shift+Down", lambda: ed.insert_paragraph(False))
         m.addSeparator()
-        m.addAction("水平分割线\tCtrl+Shift+-", ed.insert_hr)
+        m.addAction("水平分割线", ed.insert_hr)
 
         # ---- 格式（只保留 Markdown 有对应语法的项）
         m = mb.addMenu("格式(&O)")
         m.addAction("加粗\tCtrl+B", ed.toggle_bold)
         m.addAction("斜体\tCtrl+I", ed.toggle_italic)
+        m.addAction("下划线\tCtrl+U", ed.toggle_underline)
         m.addAction("删除线\tAlt+Shift+5", ed.toggle_strike)
         m.addAction("行内代码\tCtrl+Shift+`", ed.toggle_inline_code)
         m.addSeparator()
@@ -962,6 +1015,11 @@ class DatabaseView(QWidget):
 
         shift = bool(mods & Qt.ShiftModifier)
 
+        # ---- 视图缩放（先于标题判断，避免 Ctrl+Shift+0 被当成正文）
+        if shift and key == Qt.Key_0:
+            self._zoom(0)
+            return True
+
         # ---- 标题
         if not shift and Qt.Key_1 <= key <= Qt.Key_6:
             self._ensure_body_focus()
@@ -982,11 +1040,7 @@ class DatabaseView(QWidget):
             return True
         if key in (Qt.Key_Minus, Qt.Key_Underscore):
             if shift:
-                if key == Qt.Key_Minus and mods == (Qt.ControlModifier | Qt.ShiftModifier):
-                    self._ensure_body_focus()
-                    ed.insert_hr()          # Ctrl+Shift+- 水平分割线
-                else:
-                    self._zoom(-1)
+                self._zoom(-1)              # 与 Typora 一致：Ctrl+Shift+- 是缩小
             else:
                 self._ensure_body_focus()
                 ed.change_heading_level(1)
@@ -1071,12 +1125,17 @@ class DatabaseView(QWidget):
         if key == Qt.Key_B:
             self._ensure_body_focus()
             ed.toggle_bold()
-            self._fmt_hint("加粗", ed.edit.fontWeight() > QFont.Normal)
+            self._fmt_hint("加粗", ed.edit.textCursor().charFormat().fontWeight() > QFont.Normal)
             return True
         if key == Qt.Key_I:
             self._ensure_body_focus()
             ed.toggle_italic()
-            self._fmt_hint("斜体", ed.edit.fontItalic())
+            self._fmt_hint("斜体", ed.edit.textCursor().charFormat().fontItalic())
+            return True
+        if key == Qt.Key_U:
+            self._ensure_body_focus()
+            ed.toggle_underline()
+            self._fmt_hint("下划线", ed.edit.textCursor().charFormat().fontUnderline())
             return True
         if key == Qt.Key_K:
             self._ensure_body_focus()

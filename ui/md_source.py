@@ -145,6 +145,10 @@ def markdown_to_html(source: str) -> str:
 # ---------------------------------------------------------------- HTML → Markdown
 
 _SPAN_TOKEN = {"bold": "**", "italic": "*", "strike": "~~", "mark": "==", "code": "`"}
+# 下划线在 Markdown 里没有原生语法，Typora 用的是内联 HTML（<u>…</u>），
+# 开闭标记不一样，所以单独一张表。
+_SPAN_CLOSE_EXTRA = {"underline": "</u>"}
+_SPAN_OPEN_EXTRA = {"underline": "<u>"}
 
 
 class _HtmlToMd(HTMLParser):
@@ -304,7 +308,7 @@ class _HtmlToMd(HTMLParser):
             kinds = self._span_kinds(style)
             self.span_stack.append(kinds)
             for k in kinds:
-                self.buf.append(_SPAN_TOKEN[k])
+                self.buf.append(_SPAN_TOKEN.get(k) or _SPAN_OPEN_EXTRA[k])
 
     def handle_endtag(self, tag: str) -> None:
         if tag in ("head", "style", "script"):
@@ -366,7 +370,7 @@ class _HtmlToMd(HTMLParser):
         elif tag == "span":
             kinds = self.span_stack.pop() if self.span_stack else []
             for k in reversed(kinds):
-                self.buf.append(_SPAN_TOKEN[k])
+                self.buf.append(_SPAN_TOKEN.get(k) or _SPAN_CLOSE_EXTRA[k])
 
     def handle_data(self, data: str) -> None:
         if self.skip_depth:
@@ -404,6 +408,11 @@ class _HtmlToMd(HTMLParser):
             kinds.append("bold")
         if any(h in style for h in _MONO_HINT):
             kinds.append("code")
+        # 超链接本身默认带 text-decoration: underline，那是渲染样式不是
+        # 用户按 Ctrl+U 加的，别把它还原成 <u>（否则 [官网](url) 会变成
+        # [<u>官网</u>](url)）。
+        if "underline" in style and self.href is None:
+            kinds.append("underline")
         return kinds
 
     def _img_md(self, a: Dict) -> str:

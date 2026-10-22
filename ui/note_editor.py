@@ -1504,12 +1504,19 @@ class NoteEditor(QWidget):
 
     def toggle_bold(self) -> None:
         fmt = QTextCharFormat()
-        fmt.setFontWeight(QFont.Normal if self.edit.fontWeight() > QFont.Normal else QFont.Bold)
+        on = self.edit.textCursor().charFormat().fontWeight() > QFont.Normal
+        fmt.setFontWeight(QFont.Normal if on else QFont.Bold)
         self._merge(fmt)
 
     def toggle_italic(self) -> None:
         fmt = QTextCharFormat()
-        fmt.setFontItalic(not self.edit.fontItalic())
+        fmt.setFontItalic(not self.edit.textCursor().charFormat().fontItalic())
+        self._merge(fmt)
+
+    def toggle_underline(self) -> None:
+        """Ctrl+U：Markdown 没有原生下划线，按 Typora 的做法落成内联 HTML <u>…</u>。"""
+        fmt = QTextCharFormat()
+        fmt.setFontUnderline(not self.edit.textCursor().charFormat().fontUnderline())
         self._merge(fmt)
 
     def marked_highlight(self) -> bool:

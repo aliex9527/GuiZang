@@ -47,11 +47,11 @@ GROUPS = [
         ("Ctrl+Shift+Enter", "切换任务完成状态"),
         ("Ctrl+] / Ctrl+[", "增加 / 减少缩进"),
         ("Ctrl+Shift+↑ / ↓", "在上方 / 下方插入段落"),
-        ("Ctrl+Shift+-", "水平分割线"),
     ]),
     ("格式", [
         ("Ctrl+B", "加粗"),
         ("Ctrl+I", "斜体"),
+        ("Ctrl+U", "下划线（落成 &lt;u&gt;…&lt;/u&gt;）"),
         ("Alt+Shift+5", "删除线（也认 Ctrl+Shift+5）"),
         ("Ctrl+Shift+`", "行内代码"),
         ("Ctrl+Shift+H", "高亮"),
@@ -77,6 +77,7 @@ GROUPS = [
 EXTRA = [
     ("表格行/列操作", "菜单 段落 → 表格"),
     ("任务状态切换", "Ctrl+Shift+Enter 或菜单"),
+    ("水平分割线", "菜单 段落 → 水平分割线"),
 ]
 
 
