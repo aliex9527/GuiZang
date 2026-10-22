@@ -121,6 +121,40 @@ def like_escape(kw: str) -> str:
     return kw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+# 帮助内容（只在「帮助 → 使用说明」里按需展示，不写进库）
+GUIDE_MD = """# 欢迎使用 归藏
+
+这是一个把**任意格式资料**按树形分类收起来的本地小库。整个资料库就是**一个 .db 文件**，
+拷走它就是完整备份。
+
+## 三个区块
+
+| 位置 | 作用 |
+|---|---|
+| 左侧 | 分类树，右键新建 / F2 重命名 / 直接拖动改变层级 |
+| 中间 | 当前条目的笔记，边写边自动存，也可以按 Ctrl+S |
+| 附件 | 把文件直接拖进笔记正文，就存成这个条目的附件（内容进数据库） |
+
+## 记笔记就一种写法：Markdown
+
+像 Typora 一样直接打语法，标记打完就地渲染：
+
+    # 井号加空格   → 一级标题
+    - 减号加空格  → 无序列表
+    > 大于号加空格 → 引用
+    ~~~ 加空格    → 代码块
+
+行内写法：`**加粗**`、`*斜体*`、`` `代码` ``、`[文字](链接)`、`~~删除线~~`。
+停手 0.2 秒就生效，不用管输入法是不是全角空格。
+
+- [x] 试试把这个条目拖到别的分类下
+- [ ] 把一份 PDF 直接拖进正文，它会变成这个条目的附件
+- [ ] 按 F1 看全部快捷键
+
+> 笔记与附件都装在库里，不依赖任何外部文件。
+"""
+
+
 class Database:
     def __init__(self, db_file: Path):
         self.db_path = Path(db_file)
@@ -142,8 +176,6 @@ class Database:
             self.conn.execute(stmt)
         self.conn.commit()
         self._set_meta("schema_version", str(SCHEMA_VERSION))
-        if self.count_nodes() == 0:
-            self._seed()
 
     @property
     def file_name(self) -> str:
@@ -710,49 +742,3 @@ class Database:
             dest.close()
         return target
 
-    # ---------------------------------------------------------------- seed
-
-    def _seed(self) -> None:
-        md = """# 欢迎使用 归藏
-
-这是一个把**任意格式资料**按树形分类收起来的本地小库。整个资料库就是**一个 .db 文件**，
-拷走它就是完整备份。
-
-## 三个区块
-
-| 位置 | 作用 |
-|---|---|
-| 左侧 | 分类树，右键新建 / F2 重命名 / 直接拖动改变层级 |
-| 中间 | 当前条目的笔记，边写边自动存，也可以按 Ctrl+S |
-| 附件 | 把文件直接拖进笔记正文，就存成这个条目的附件（内容进数据库） |
-
-## 记笔记就一种写法：Markdown
-
-像 Typora 一样直接打语法，标记打完就地渲染：
-
-    # 井号加空格   → 一级标题
-    - 减号加空格  → 无序列表
-    > 大于号加空格 → 引用
-    ~~~ 加空格    → 代码块
-
-行内写法：`**加粗**`、`*斜体*`、`` `代码` ``、`[文字](链接)`、`~~删除线~~`。
-停手 0.2 秒就生效，不用管输入法是不是全角空格。
-
-- ☑ 试试把这个条目拖到别的分类下
-- ☐ 把一份 PDF 直接拖进正文，它会变成这个条目的附件
-- ☐ 按 F1 看全部快捷键
-
-> 笔记与附件都装在库里，不依赖任何外部文件。
-
----
-
-*本说明可以直接删除。*
-"""
-        try:
-            import markdown as _md
-            html = _md.markdown(md, extensions=["extra", "sane_lists"])
-        except Exception:  # noqa: BLE001
-            from html import escape
-            html = "<pre>" + escape(md) + "</pre>"
-        guide_id = self.create_node("使用说明", None, note_text=html, tags="帮助")
-        self.update_node(guide_id, expanded=1)

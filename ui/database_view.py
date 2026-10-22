@@ -16,11 +16,11 @@ from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices, QFon
                            QImage, QKeySequence, QPainter, QPainterPath, QPalette,
                            QPen, QShortcut, QTextListFormat)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QDialog,
-                               QInputDialog, QMenu,
+                               QDialogButtonBox, QInputDialog, QMenu,
                                QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QMessageBox, QProgressDialog,
                                QSizePolicy, QSplitter, QStackedWidget, QStyle,
-                               QStyledItemDelegate, QToolBar,
+                               QStyledItemDelegate, QTextBrowser, QToolBar,
                                QToolButton, QToolTip, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
@@ -862,11 +862,38 @@ class DatabaseView(QWidget):
 
     # ------------------------------------------------------- 编辑器快捷键
 
+    def _owns_widget(self, obj) -> bool:
+        """判断这个控件上的按键该不该由本视图处理。"""
+        if not isinstance(obj, QWidget):
+            return False
+        if self.isAncestorOf(obj):
+            return True
+        # 焦点停在库标签栏上时（刚点过标签），当前标签是本视图就也接管
+        tabs = getattr(self.window(), "tabs", None)
+        return bool(tabs is not None and tabs.currentWidget() is self
+                    and tabs.tabBar() is obj)
+
+    def _ensure_body_focus(self) -> None:
+        """把键盘焦点交给正文。
+
+        选中条目后焦点可能还停在分类树、库标签栏或标题框上，
+        这时按格式快捷键虽然改了文档，光标却不在正文里 —— 用户看到的就是
+        "空笔记里按了没反应"。所以正文类快捷键先接管焦点再执行。
+        """
+        edit = self.editor.edit
+        if edit.hasFocus():
+            return
+        fw = QApplication.focusWidget()
+        if fw is not None and (fw is self.search_box
+                               or self.search_box.isAncestorOf(fw)):
+            return                      # 正在搜索框里打字，不抢
+        edit.setFocus()
+
     def eventFilter(self, obj, event):  # noqa: N802
         if (event.type() == QEvent.KeyPress
                 and QApplication.activeModalWidget() is None
                 and QApplication.activePopupWidget() is None
-                and isinstance(obj, QWidget) and self.isAncestorOf(obj)):
+                and self._owns_widget(obj)):
             if self._handle_shortcut(event):
                 return True
         return super().eventFilter(obj, event)
@@ -909,6 +936,7 @@ class DatabaseView(QWidget):
         # ---- Alt+Shift+5 删除线
         if mods & Qt.AltModifier:
             if key == Qt.Key_5 and mods & Qt.ShiftModifier:
+                self._ensure_body_focus()
                 ed.toggle_strike()
                 return True
             return False
@@ -920,9 +948,11 @@ class DatabaseView(QWidget):
 
         # ---- 标题
         if not shift and Qt.Key_1 <= key <= Qt.Key_6:
+            self._ensure_body_focus()
             ed.set_heading(key - Qt.Key_0)
             return True
         if not shift and key == Qt.Key_0:
+            self._ensure_body_focus()
             ed.set_heading(0)
             return True
 
@@ -931,57 +961,73 @@ class DatabaseView(QWidget):
             if shift:
                 self._zoom(1)
             else:
+                self._ensure_body_focus()
                 ed.change_heading_level(-1)
             return True
         if key in (Qt.Key_Minus, Qt.Key_Underscore):
             if shift:
                 if key == Qt.Key_Minus and mods == (Qt.ControlModifier | Qt.ShiftModifier):
+                    self._ensure_body_focus()
                     ed.insert_hr()          # Ctrl+Shift+- 水平分割线
                 else:
                     self._zoom(-1)
             else:
+                self._ensure_body_focus()
                 ed.change_heading_level(1)
             return True
 
         # ---- 带 Shift 的组合
         if shift:
             if key == Qt.Key_K:
+                self._ensure_body_focus()
                 ed.insert_code_block()
                 return True
             if key == Qt.Key_Q:
+                self._ensure_body_focus()
                 ed.toggle_quote()
                 return True
             if key == Qt.Key_BracketLeft:
+                self._ensure_body_focus()
                 ed.toggle_list(QTextListFormat.ListDecimal)
                 return True
             if key == Qt.Key_BracketRight:
+                self._ensure_body_focus()
                 ed.toggle_list(QTextListFormat.ListDisc)
                 return True
             if key == Qt.Key_X:
+                self._ensure_body_focus()
                 ed.toggle_task()
                 return True
             if key == Qt.Key_H:
+                self._ensure_body_focus()
                 ed.toggle_highlight()
                 return True
             if key == Qt.Key_Return or key == Qt.Key_Enter:
+                self._ensure_body_focus()
                 ed.toggle_task_state()
                 return True
             if key == Qt.Key_Up:
+                self._ensure_body_focus()
                 ed.insert_paragraph(True)
                 return True
             if key == Qt.Key_Down:
+                self._ensure_body_focus()
                 ed.insert_paragraph(False)
                 return True
             if key == Qt.Key_I:
+                self._ensure_body_focus()
                 ed.insert_image()
                 return True
             if key == Qt.Key_QuoteLeft:
+                self._ensure_body_focus()
                 ed.toggle_inline_code()
                 return True
             if key == Qt.Key_C:
+                self._ensure_body_focus()
                 ed.copy_as_markdown()
                 return True
             if key == Qt.Key_V:
+                self._ensure_body_focus()
                 ed.paste_plain()
                 return True
             if key == Qt.Key_S:
@@ -997,18 +1043,22 @@ class DatabaseView(QWidget):
 
         # ---- Ctrl 单键
         if key == Qt.Key_B:
+            self._ensure_body_focus()
             ed.toggle_bold()
             return True
         if key == Qt.Key_I:
+            self._ensure_body_focus()
             ed.toggle_italic()
             return True
         if key == Qt.Key_K:
+            self._ensure_body_focus()
             ed.insert_link()
             return True
         if key == Qt.Key_T:
             self.insert_table()
             return True
         if key == Qt.Key_Backslash:
+            self._ensure_body_focus()
             ed.clear_format()
             return True
         if key == Qt.Key_Slash:
@@ -1018,9 +1068,11 @@ class DatabaseView(QWidget):
             self.toggle_star()               # myBase: Ctrl+D 书签/收藏
             return True
         if key == Qt.Key_BracketRight:
+            self._ensure_body_focus()
             ed.edit._indent_block(1)
             return True
         if key == Qt.Key_BracketLeft:
+            self._ensure_body_focus()
             ed.edit._indent_block(-1)
             return True
         if key == Qt.Key_S:
@@ -1092,15 +1144,24 @@ class DatabaseView(QWidget):
             act.setChecked(key == name)
 
     def _show_guide(self) -> None:
-        for nid in self._items:
-            if self.db.title_of(nid) == "使用说明":
-                self._goto_search_result(nid)
-                return
-        QMessageBox.information(self, "使用说明",
-                                "当前资料库里没有「使用说明」条目。\n\n"
-                                "· 左侧分类树右键可新建条目\n"
-                                "· 任意文件拖进右侧附件区即可入库\n"
-                                "· 顶部搜索框搜标题、正文、标签、附件名")
+        """帮助内容只在这里按需展示，不再往库里塞「使用说明」条目。"""
+        from core.database import GUIDE_MD
+        from ui.markdown_render import render_preview
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("使用说明")
+        dlg.resize(780, 660)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(0, 0, 0, 10)
+        view = QTextBrowser(dlg)
+        view.setFrameShape(QFrame.NoFrame)
+        view.setOpenExternalLinks(True)
+        view.setHtml(render_preview(GUIDE_MD))
+        lay.addWidget(view, 1)
+        box = QDialogButtonBox(QDialogButtonBox.Ok, dlg)
+        box.accepted.connect(dlg.accept)
+        lay.addWidget(box, 0, Qt.AlignCenter)
+        dlg.exec()
 
     def _about(self) -> None:
         QMessageBox.about(

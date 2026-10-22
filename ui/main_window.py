@@ -53,6 +53,8 @@ class MainWindow(QMainWindow):
         self.tabs.setMovable(True)
         self.tabs.setDocumentMode(True)
         self.tabs.setTabBarAutoHide(False)
+        # 点标签栏不该把键盘焦点留在标签上，否则之后的打字和快捷键都落空
+        self.tabs.tabBar().setFocusPolicy(Qt.NoFocus)
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.tabs.tabCloseRequested.connect(self._close_view_at)
         self.setCentralWidget(self.tabs)
