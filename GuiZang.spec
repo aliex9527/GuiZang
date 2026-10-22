@@ -1,6 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_submodules
 
+# 说明：Windows 单文件 EXE 的版本号由 CI 在打包后改文件名体现
+# （如 GuiZang-1.0.3-windows-x64.exe），与 macOS 版共用同一个 tag 派生来源，
+# 因此两平台版本天然一致；此处不需要给 EXE 内嵌版本资源。
+
 hiddenimports = ['markdown.extensions.extra', 'markdown.extensions.sane_lists', 'markdown.extensions.nl2br', 'markdown.extensions.admonition', 'markdown.extensions.codehilite']
 hiddenimports += collect_submodules('markdown')
 hiddenimports += collect_submodules('pygments.formatters')

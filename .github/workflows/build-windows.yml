@@ -1,0 +1,69 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:          # 手动触发
+  push:
+    tags:
+      - 'v*'                   # 打 tag 时自动触发
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="1.0.3"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "本次构建版本：$V"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install PySide6-Essentials markdown html2text Pygments pyinstaller
+
+      - name: Generate icon (ico)
+        run: |
+          python tools/make_icon.py
+
+      - name: Build EXE
+        env:
+          GZ_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          pyinstaller GuiZang.spec --noconfirm --distpath dist --workpath build
+
+      - name: Rename with version
+        shell: bash
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          mv dist/GuiZang.exe "dist/GuiZang-${V}-windows-x64.exe"
+          ls -lh dist/
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: GuiZang-windows-x64
+          path: dist/*.exe
+          if-no-files-found: error
+
+      - name: Publish to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
