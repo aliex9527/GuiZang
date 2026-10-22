@@ -30,7 +30,7 @@ from core.storage import human_size
 from ui.attachments import AttachmentPanel
 from ui.icons import app_icon, file_icon, folder_icon, leaf_icon
 from ui.note_editor import NoteEditor
-from ui.markdown_render import html_to_md
+from ui.markdown_render import md_to_html
 from ui.search_panel import SearchPanel
 from ui.theme import P
 
@@ -1504,13 +1504,15 @@ class DatabaseView(QWidget):
                     except OSError:
                         pass
 
-        html = row["note_text"] or ""
-        (folder / "笔记.html").write_text(
-            self._standalone_html(row["title"] or "未命名", html), encoding="utf-8")
+        source = row["note_text"] or ""
+        # 真源是 Markdown：笔记.md 直接就是源码，笔记.html 由源码渲染
         try:
-            (folder / "笔记.md").write_text(html_to_md(html), encoding="utf-8")
-        except Exception:  # noqa: BLE001
+            (folder / "笔记.md").write_text(source, encoding="utf-8")
+        except OSError:
             pass
+        body = md_to_html(source) if row["note_format"] == "md" else source
+        (folder / "笔记.html").write_text(
+            self._standalone_html(row["title"] or "未命名", body), encoding="utf-8")
 
         for child in self.db.children(node_id):
             self._export_recursive(int(child["id"]), folder)

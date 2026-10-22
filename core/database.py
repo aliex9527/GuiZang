@@ -22,6 +22,10 @@ SCHEMA_VERSION = 4
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
+# Markdown 纯文本化（全文索引用）用到的几个模式
+_TABLE_SEP_RE = re.compile(r"^\|?[\s\-:|]+\|?$")
+_MD_IMG_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)(\{width=\d+\})?")
+_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 _HEAD_RE = re.compile(r"<(head|style|script)\b[^>]*>.*?</\1>", re.I | re.S)
 
 SCHEMA = [
@@ -31,7 +35,7 @@ SCHEMA = [
         parent_id   INTEGER REFERENCES nodes(id) ON DELETE CASCADE,
         title       TEXT    NOT NULL DEFAULT '',
         note_text   TEXT    NOT NULL DEFAULT '',
-        note_format TEXT    NOT NULL DEFAULT 'html',
+        note_format TEXT    NOT NULL DEFAULT 'md',
         note_plain  TEXT    NOT NULL DEFAULT '',
         tags        TEXT    NOT NULL DEFAULT '',
         starred     INTEGER NOT NULL DEFAULT 0,
@@ -229,7 +233,7 @@ class Database:
         parent_id: Optional[int] = None,
         note_text: str = "",
         tags: str = "",
-        note_format: str = "html",
+        note_format: str = "md",
     ) -> int:
         ts = now_str()
         plain = self._plain_of(note_text, note_format)
@@ -249,9 +253,27 @@ class Database:
     @staticmethod
     def _plain_of(text: str, fmt: str) -> str:
         if fmt == "md":
-            stripped = re.sub(r"[#>*`_~]", " ", text or "")
-            return _WS_RE.sub(" ", stripped).strip()
+            return Database._md_plain(text)
         return html_to_text(text)
+
+    @staticmethod
+    def _md_plain(text: str) -> str:
+        """Markdown 源码 → 供全文搜索用的纯文本（去掉标记与结构符号）。"""
+        lines: List[str] = []
+        in_fence = False
+        for line in (text or "").split("\n"):
+            if line.strip().startswith("```"):
+                in_fence = not in_fence
+                continue
+            if not in_fence and _TABLE_SEP_RE.match(line.strip()):
+                continue
+            lines.append(line)
+        body = "\n".join(lines)
+        body = _MD_IMG_RE.sub(" ", body)                 # 图片整体去掉
+        body = _MD_LINK_RE.sub(r"\1", body)              # 链接只留文字
+        body = re.sub(r"^\s*([-*+]|\d+\.)\s+", " ", body, flags=re.M)   # 列表符号
+        body = re.sub(r"[#>*`_~=|]", " ", body)
+        return _WS_RE.sub(" ", body).strip()
 
     def get_node(self, node_id: int) -> Optional[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
@@ -416,7 +438,7 @@ class Database:
                 fmt = fields.get("note_format")
                 if fmt is None:
                     row = self.get_node(node_id)
-                    fmt = row["note_format"] if row else "html"
+                    fmt = row["note_format"] if row else "md"
                 text = self._plain_of(fields["note_text"], fmt)
             sets.append("note_plain = ?")
             vals.append(text)

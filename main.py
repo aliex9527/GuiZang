@@ -125,6 +125,9 @@ def main() -> int:
         migrate_legacy(db_file)
 
     db = Database(db_file)
+    # 历史笔记存的是 HTML；这里一次性转成 Markdown 源码，此后库里只有 Markdown
+    from ui.md_source import migrate_html_notes
+    migrate_html_notes(db)
     # 主题跟着库走（存在 meta 里），不再读 %APPDATA%/GuiZang/config.json
     theme.apply_theme(db.get_meta("ui.theme", "light"))
     app.setStyleSheet(style.qss())

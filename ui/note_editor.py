@@ -4,7 +4,8 @@
 * Markdown 模式：同样是所见即所得，但支持 Typora 式输入规则
   —— 打 `# ` 变标题、`- ` 变列表、`**粗**` 自动加粗，标记就地消失
 
-两种模式共用同一个 QTextEdit，内容始终以 HTML 保存，切换不会丢内容。
+两种模式共用同一个 QTextEdit，但**落库只存 Markdown 源码**：
+显示用富文本，保存时反向序列化成 Markdown（见 :mod:`ui.md_source`）。
 """
 
 from __future__ import annotations
@@ -15,11 +16,13 @@ from typing import Callable, Optional, Tuple
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (QBrush, QColor, QCursor, QFont, QImage, QPalette,
                            QTextBlockFormat, QTextCharFormat, QTextCursor, QTextDocument,
-                           QTextImageFormat, QTextListFormat, QTextTableFormat)
+                           QTextFormat, QTextImageFormat, QTextListFormat, QTextTableFormat)
 from PySide6.QtWidgets import (QApplication, QFileDialog, QInputDialog, QMenu, QTextEdit,
                                QVBoxLayout, QWidget)
 
 from ui.markdown_render import md_to_html, preview_css
+from ui.md_source import (MANUAL_WIDTH_PROP, document_to_markdown,
+                          markdown_to_html)
 from ui.theme import P
 from ui.fonts import UI_FONT_STACK
 
@@ -402,6 +405,33 @@ class MarkdownEdit(QTextEdit):
         self._pending_removed[fid] = timer
         timer.start()
 
+    def mark_manual_widths(self) -> None:
+        """载入后调用：本来带宽度（来自 md 的 {width=N}）的图片标成手动尺寸。
+
+        没有这个标记，下次保存时程序分不清"用户定的宽度"和"按窗口自动排的
+        宽度"，会把临时值写进 Markdown，导致源码随窗口大小反复变化。
+        """
+        doc = self.document()
+        cursor = QTextCursor(doc)
+        block = doc.begin()
+        while block.isValid():
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                if frag.isValid():
+                    cf = frag.charFormat()
+                    if cf.isImageFormat():
+                        img = cf.toImageFormat()
+                        if img.width() > 0 and not cf.hasProperty(MANUAL_WIDTH_PROP):
+                            cursor.setPosition(frag.position())
+                            cursor.setPosition(frag.position() + frag.length(),
+                                               QTextCursor.KeepAnchor)
+                            new_fmt = QTextImageFormat(img)
+                            new_fmt.setProperty(MANUAL_WIDTH_PROP, True)
+                            cursor.setCharFormat(new_fmt)
+                it += 1
+            block = block.next()
+
     def fit_images(self, allow_grow: bool = False) -> bool:
         """按当前可视宽度重排正文图片：小图保持原像素，大图缩到刚好放得下。"""
         doc = self.document()
@@ -426,8 +456,10 @@ class MarkdownEdit(QTextEdit):
                             size = (orig.width(), orig.height())
                         cur_w = int(round(fmt.width())) if fmt.width() > 0 else 0
                         auto_w = min(size[0], avail) if size and size[0] > 0 else cur_w
-                        auto = (cur_w <= 0) or (fid in self._auto_fids)
-                        if allow_grow and size and size[0] > 0:
+                        # 手动定过尺寸的图（md 里写了 {width=N} 或用户拖过）不参与自动排版
+                        manual = fmt.hasProperty(MANUAL_WIDTH_PROP)
+                        auto = (not manual) and ((cur_w <= 0) or (fid in self._auto_fids))
+                        if allow_grow and not manual and size and size[0] > 0:
                             # 首次载入：历史上被限宽的 640 与满宽值都算自动宽度
                             if cur_w == 640 and size[0] > 640:
                                 auto = True
@@ -593,6 +625,7 @@ class MarkdownEdit(QTextEdit):
         cursor.setPosition(start + length, QTextCursor.KeepAnchor)
         new_fmt = QTextImageFormat(fmt)
         new_fmt.setWidth(int(max(48, width)))
+        new_fmt.setProperty(MANUAL_WIDTH_PROP, True)   # 手动尺寸要写进 md 的 {width=N}
         if orig is not None and orig.width() > 0:
             new_fmt.setHeight(max(1, round(new_fmt.width() * orig.height() / orig.width())))
             self._swap_resource(doc, fmt.name(), orig, int(new_fmt.width()))
@@ -713,6 +746,25 @@ class MarkdownEdit(QTextEdit):
             fmt.setFontUnderline(True)
         return fmt
 
+    def _base_format_for(self, block) -> QTextCharFormat:
+        """该段落的"后续输入"基准格式：标题按标题字号，正文按正文。
+
+        Markdown 标记转换时必须把插入点格式复位到这个基准，否则
+        `**粗体**` 之后的字会一直带着粗体（insertText 会把格式粘到后续输入）。
+        """
+        level = int(block.blockFormat().headingLevel())
+        fmt = QTextCharFormat()
+        fmt.setFontFamilies(list(UI_FONT_STACK))
+        if level:
+            fmt.setFontPointSize(HEADING_SIZES.get(level, 11.0))
+            fmt.setFontWeight(QFont.Bold)
+            fmt.setForeground(HEADING6_COLOR if level == 6 else QColor(P["note_text"]))
+        else:
+            fmt.setFontPointSize(11.0)
+            fmt.setFontWeight(QFont.Normal)
+            fmt.setForeground(QColor(P["note_text"]))
+        return fmt
+
     def _apply_inline_rules_live(self) -> None:
         """把光标左侧已经闭合的 Markdown 标记实时转成格式（不等空格）。"""
         if not self.md_rules or self._applying:
@@ -744,10 +796,12 @@ class MarkdownEdit(QTextEdit):
                 fmt = self._format_for(kind, m.group(2) if kind == "link" else "")
                 old_abs = cur.position()
                 removed = (m.end() - m.start()) - len(m.group(1))
+                base = self._base_format_for(block)
                 c = QTextCursor(block)
                 c.setPosition(block.position() + m.start())
                 c.setPosition(block.position() + m.end(), QTextCursor.KeepAnchor)
                 c.insertText(m.group(1), fmt)
+                c.setCharFormat(base)      # 后续输入回到正文基准
                 c.setPosition(max(0, old_abs - removed))
                 self.setTextCursor(c)
         finally:
@@ -769,10 +823,13 @@ class MarkdownEdit(QTextEdit):
                         if m.end() != pos:
                             continue
                         fmt = self._format_for(kind, m.group(2) if kind == "link" else "")
+                        base = self._base_format_for(block)
                         c = QTextCursor(block)
                         c.setPosition(block.position() + m.start())
                         c.setPosition(block.position() + m.end(), QTextCursor.KeepAnchor)
                         c.insertText(m.group(1), fmt)
+                        # 复位插入点格式，别让标记后的字跟着变粗/斜
+                        c.setCharFormat(base)
                         changed = True
                         break
                     if changed:
@@ -827,6 +884,7 @@ class MarkdownEdit(QTextEdit):
         ncols = len(cells)
         c = QTextCursor(block)
         c.beginEditBlock()
+        self._detach_list(c)   # 列表项里输入表格，先离开列表，否则会变成列表项里的表格
         tf = QTextTableFormat()
         tf.setBorder(1)
         tf.setBorderBrush(QBrush(QColor(P["border"])))
@@ -857,6 +915,19 @@ class MarkdownEdit(QTextEdit):
                         QTextCursor.KeepAnchor)
         cur.removeSelectedText()
         return cur
+
+    def _detach_list(self, cur) -> None:
+        """把当前块从所在列表里摘出来（切到引用/代码块/表格前必须做）。
+
+        不摘的话块同时是"列表项 + 引用/代码块"，显示混乱，存成 Markdown
+        时也会被写成 `- xxx` 而不是 `> xxx`。
+        """
+        lst = cur.currentList()
+        if lst is not None:
+            try:
+                lst.remove(cur.block())
+            except (RuntimeError, AttributeError):
+                pass
 
     def _try_block_rule(self) -> bool:
         cur = self.textCursor()
@@ -889,15 +960,27 @@ class MarkdownEdit(QTextEdit):
         bf.setIndent(0)
         self._space(bf, level=level)
         c.setBlockFormat(bf)
-        c.insertText(content, self._heading_format(level))
+        c.removeSelectedText()
+        fmt = self._heading_format(level)
+        if content:
+            c.insertText(content, fmt)
+        # 内容可能为空（只打了 "# " 就触发）—— 插入点格式也要设成标题样式，
+        # 否则接下来录入的字是正文字号，看起来就像"标题没放大"。
+        c.setCharFormat(fmt)
         c.endEditBlock()
         c.setPosition(c.block().position() + len(content))
         self.setTextCursor(c)
         return True
 
     def _apply_marker(self, text: str) -> bool:
-        # 代码块内的 # - > 都是正文，不能当标记
+        # 代码块内的 # - > 都是正文，不能当标记；但单独的 ``` 是关闭代码块
         if self.textCursor().blockFormat().background().color().name().lower() == P["code_bg"]:
+            if _FENCE_RE2.match(text):
+                cur = self._clear_block()
+                self._leave_block_format(True)
+                cur.endEditBlock()
+                self.setTextCursor(cur)
+                return True
             return False
         m = _HEADING_RE.match(text)
         if m:
@@ -953,6 +1036,7 @@ class MarkdownEdit(QTextEdit):
         m = _QUOTE_RE.match(text)
         if m:
             cur = self._clear_block()
+            self._detach_list(cur)
             bf = cur.blockFormat()
             bf.setLeftMargin(20)
             bf.setBackground(QColor(P["quote_bg"]))
@@ -972,13 +1056,22 @@ class MarkdownEdit(QTextEdit):
 
         if _HR_RE.match(text):
             cur = self._clear_block()
+            self._detach_list(cur)
             cur.insertHtml("<hr/>")
+            # 分隔线块的 ruler 属性会被后续段落继承（打字就变成又一条线），
+            # 这里显式清掉并直接落一个新段落，光标跟过去。
+            nb = QTextBlockFormat(cur.blockFormat())
+            nb.clearProperty(QTextFormat.Property.BlockTrailingHorizontalRulerWidth.value)
+            nb.setTopMargin(8)
+            nb.setBottomMargin(0)
+            cur.insertBlock(nb, self._base_format_for(cur.block()))
             cur.endEditBlock()
             self.setTextCursor(cur)
             return True
 
         if _FENCE_RE2.match(text):
             cur = self._clear_block()
+            self._detach_list(cur)
             self.apply_code_block(cur)
             cur.endEditBlock()
             self.setTextCursor(cur)
@@ -1159,6 +1252,8 @@ class MarkdownEdit(QTextEdit):
             # 其余情况自己插入段落，格式一次到位。
             # 不能先 super() 再改格式——那会让 QTextEdit 之后的回车失效。
             nb = QTextBlockFormat(bf)
+            # 分隔线块的 ruler 属性不能带给下一个段落，否则会凭空多出一条线
+            nb.clearProperty(QTextFormat.Property.BlockTrailingHorizontalRulerWidth.value)
             cf = QTextCharFormat(cur.charFormat())
             if in_code:
                 nb.setBackground(QColor(P["code_bg"]))
@@ -1257,7 +1352,7 @@ class NoteEditor(QWidget):
         if not ok:
             self.edit.clear()
 
-    def set_node(self, node_id: Optional[int], content: str = "", fmt: str = "html") -> None:
+    def set_node(self, node_id: Optional[int], content: str = "", fmt: str = "md") -> None:
         self.flush()
         self._node_id = node_id
         self._loading = True
@@ -1269,14 +1364,23 @@ class NoteEditor(QWidget):
                 changed = False
             else:
                 self._set_enabled(True)
-                self.edit.setHtml(content or "")
+                if fmt == "md":
+                    # 真源是 Markdown：渲染成富文本再显示
+                    self.edit.setHtml(markdown_to_html(content or ""))
+                    changed = False
+                else:
+                    # 历史笔记是 HTML。载入后按 md 存回去，等于自动迁移。
+                    self.edit.setHtml(content or "")
+                    changed = bool((content or "").strip())
                 self.edit.moveCursor(QTextCursor.Start)
                 self.edit._sync_empty_line_format()
-                changed = remap_theme_colors(self.edit.document())
+                if remap_theme_colors(self.edit.document()):
+                    changed = True
                 # 历史笔记里的纯文本 “# 标题” 行：载入时就转成真标题
                 if self.edit.normalize_headings():
                     changed = True
-                # 载入后按当前窗口宽度重排图片（存的是原始像素宽）
+                # md 里写了 {width=N} 的图片先认成"手动尺寸"，再按窗口排其余图片
+                self.edit.mark_manual_widths()
                 self.edit.fit_images(allow_grow=True)
         finally:
             self._loading = False
@@ -1296,17 +1400,16 @@ class NoteEditor(QWidget):
             self.edit.flush_pending()
 
     def copy_as_markdown(self) -> None:
-        from ui.markdown_render import html_to_md
-        text = html_to_md(self.edit.toHtml())
-        QApplication.clipboard().setText(text)
+        QApplication.clipboard().setText(document_to_markdown(self.edit.document()))
 
     def paste_plain(self) -> None:
         self.edit.insertPlainText(QApplication.clipboard().text())
 
     def payload(self) -> Tuple[str, str, str]:
         self.edit.flush_pending()
-        html = self.edit.toHtml()
-        return "html", html, self.edit.toPlainText()
+        # 库里只存 Markdown 源码；富文本只是这一刻的显示形态
+        md = document_to_markdown(self.edit.document())
+        return "md", md, self.edit.toPlainText()
 
     def refresh_theme(self) -> None:
         doc = self.edit.document()
@@ -1485,9 +1588,18 @@ class NoteEditor(QWidget):
         cur = self.edit.textCursor()
         cur.beginEditBlock()
         if cur.block().text().strip():
-            cur.insertBlock()
+            nb = QTextBlockFormat(cur.blockFormat())
+            nb.clearProperty(QTextFormat.Property.BlockTrailingHorizontalRulerWidth.value)
+            cur.insertBlock(nb, self.edit._base_format_for(cur.block()))
         cur.insertHtml("<hr/>")
+        # 分隔线后面留一个干净段落，接着打字不会写进 hr 块里
+        nb = QTextBlockFormat(cur.blockFormat())
+        nb.clearProperty(QTextFormat.Property.BlockTrailingHorizontalRulerWidth.value)
+        nb.setTopMargin(8)
+        nb.setBottomMargin(0)
+        cur.insertBlock(nb, self.edit._base_format_for(cur.block()))
         cur.endEditBlock()
+        self.edit.setTextCursor(cur)
 
     def insert_paragraph(self, above: bool) -> None:
         cur = self.edit.textCursor()
