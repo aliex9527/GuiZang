@@ -1020,14 +1020,17 @@ class DatabaseView(QWidget):
             self._zoom(0)
             return True
 
-        # ---- 标题
+        # ---- 标题：Ctrl+1~6 幂等设为 N 级，Ctrl+0 回正文（与 Typora 一致）
         if not shift and Qt.Key_1 <= key <= Qt.Key_6:
             self._ensure_body_focus()
-            ed.set_heading(key - Qt.Key_0)
+            lv = key - Qt.Key_0
+            ed.set_heading(lv)
+            self.status_message.emit(f"已设为标题 {lv} · Ctrl+0 回到正文", 1600)
             return True
         if not shift and key == Qt.Key_0:
             self._ensure_body_focus()
             ed.set_heading(0)
+            self.status_message.emit("已设为正文", 1400)
             return True
 
         # ---- 缩放 / 升降级

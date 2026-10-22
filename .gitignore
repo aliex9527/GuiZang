@@ -31,3 +31,6 @@ Thumbs.db
 
 # 编辑器/助手工作目录
 .workbuddy/
+
+# 临时测试脚本
+_scratch/

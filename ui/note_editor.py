@@ -1634,24 +1634,43 @@ class NoteEditor(QWidget):
         self.edit.setTextCursor(cur)
 
     def set_heading(self, level: int) -> None:
-        # Typora 行为：光标已是该级标题时再按同一快捷键 → 切回正文
-        cur_level = int(self.edit.textCursor().blockFormat().headingLevel())
-        if level and cur_level == level:
-            level = 0
-        self.edit.textCursor().beginEditBlock()
-        cur = self.edit.textCursor()
+        """Ctrl+1~6 把光标所在行设为 N 级标题，Ctrl+0 回到正文。
+
+        与 Typora 一致：**幂等**。已经是该级标题时再按同一个键保持原样，
+        只有 Ctrl+0 才退回正文。以前写成"同级再按 → 切回正文"，结果用户
+        按第二下标题就没了，看起来就像"Ctrl+1 没把这一行变成标题 1"。
+        """
+        level = max(0, min(6, level))
+        ed = self.edit
+        cur = ed.textCursor()
+
+        # 列表项转标题前先从列表里摘出来，否则块同时是"列表项 + 标题"，
+        # 存成 Markdown 会写成 `- # xxx`。
+        lst = cur.currentList()
+        if lst is not None and level:
+            block = cur.block()
+            try:
+                lst.remove(block)
+            except (RuntimeError, AttributeError):
+                pass
+            cur = QTextCursor(block)
+            ed.setTextCursor(cur)
+
+        cur.beginEditBlock()
         bf = cur.blockFormat()
-        bf.setHeadingLevel(max(0, level))
+        bf.setHeadingLevel(level)
         bf.setLeftMargin(0 if level else bf.leftMargin())
         bf.setIndent(0)
         if level:
-            self.edit._space(bf, level=level)      # 标题段距 16/16 + 行高
+            ed._space(bf, level=level)             # 标题段距 16/16 + 行高
         else:
             # 切回正文：清掉标题行高与标题段距，否则段落还是标题式的空档
             bf.setLineHeight(0, QTextBlockFormat.LineHeightTypes.SingleHeight.value)
             bf.setTopMargin(8)
             bf.setBottomMargin(0)
         cur.setBlockFormat(bf)
+        cur.endEditBlock()
+        ed.setTextCursor(cur)
 
         fmt = QTextCharFormat()
         fmt.setFontPointSize(HEADING_SIZES.get(level, 11.0))
