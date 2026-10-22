@@ -18,6 +18,8 @@ venv/
 *.db-wal
 *.db-shm
 _smoke*.db
+.tmpdb/
+.t*.db
 
 # 图标中间产物（.ico/.icns 由 make_icon.py 生成）
 build/*.ico
