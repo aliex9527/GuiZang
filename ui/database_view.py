@@ -21,7 +21,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QD
                                QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QMessageBox, QProgressDialog,
                                QSizePolicy, QSplitter, QStackedWidget, QStyle,
-                               QStyledItemDelegate, QTextBrowser, QToolBar,
+                               QStyledItemDelegate, QTextBrowser, QTextEdit,
+                               QToolBar,
                                QToolButton, QToolTip, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
@@ -566,11 +567,12 @@ class DatabaseView(QWidget):
         lay.addWidget(self.editor, 1)
 
         self.empty_hint = QLabel(
-            "左边选一个条目，或按 Ctrl+N 新建一个\n\n"
+            "点这里直接开始写，或按 Ctrl+N 新建一个条目\n\n"
             "· 任意格式的文件都可以拖进右侧附件区\n"
             "· 顶部搜索框可以搜正文和附件名", wrap)
         self.empty_hint.setObjectName("EmptyHint")
         self.empty_hint.setAlignment(Qt.AlignCenter)
+        self.empty_hint.setCursor(Qt.PointingHandCursor)
         self.empty_hint.hide()
         lay.addWidget(self.empty_hint)
         return wrap
@@ -957,6 +959,12 @@ class DatabaseView(QWidget):
             f"{name}{'已开' if on else '已关'} · 继续输入即生效", 1800)
 
     def eventFilter(self, obj, event):  # noqa: N802
+        # 空状态页直接点一下就开写：不然用户点正文区既没有焦点也打不了字
+        # （过滤器在 _build_ui 之前就装了，empty_hint 可能还不存在）
+        hint = getattr(self, "empty_hint", None)
+        if hint is not None and obj is hint and event.type() == QEvent.MouseButtonPress:
+            self.new_node(False, rename=False)
+            return True
         if (event.type() == QEvent.KeyPress
                 and QApplication.activeModalWidget() is None
                 and QApplication.activePopupWidget() is None
@@ -1020,17 +1028,21 @@ class DatabaseView(QWidget):
             self._zoom(0)
             return True
 
-        # ---- 标题：Ctrl+1~6 幂等设为 N 级，Ctrl+0 回正文（与 Typora 一致）
+        # ---- 标题：Ctrl+1~6 设为 N 级，同一级再按一次取消；Ctrl+0 也是正文
         if not shift and Qt.Key_1 <= key <= Qt.Key_6:
             self._ensure_body_focus()
             lv = key - Qt.Key_0
-            ed.set_heading(lv)
-            self.status_message.emit(f"已设为标题 {lv} · Ctrl+0 回到正文", 1600)
+            applied = ed.set_heading(lv)
+            if applied:
+                self.status_message.emit(
+                    f"已设为标题 {applied} · 再按一次取消", 1600)
+            else:
+                self.status_message.emit("已回到正文", 1400)
             return True
         if not shift and key == Qt.Key_0:
             self._ensure_body_focus()
             ed.set_heading(0)
-            self.status_message.emit("已设为正文", 1400)
+            self.status_message.emit("已回到正文", 1400)
             return True
 
         # ---- 缩放 / 升降级
@@ -1948,6 +1960,24 @@ class DatabaseView(QWidget):
         last = self.db.get_meta("last_node", "")
         if last.isdigit() and int(last) in self._items:
             self._select_node(int(last))
+        else:
+            # 上次选中的条目被删了（或这台机器头一次打开这个库）：
+            # 兜底落到树里第一条，库里一条都没有就建一条。
+            # 不兜底的话正文停在只读空状态，点进去打不了字，
+            # 看起来就像"整个应用没法输入任何东西"。
+            first = self._first_node_id()
+            if first is not None:
+                self._select_node(first)
+            else:
+                self.new_node(False, rename=False)
+
+    def _first_node_id(self) -> Optional[int]:
+        """树里第一个条目的 id。"""
+        top = self.tree.topLevelItem(0)
+        if top is None:
+            return None
+        nid = top.data(0, ROLE_ID)
+        return int(nid) if nid is not None else None
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
@@ -1962,8 +1992,27 @@ class DatabaseView(QWidget):
 
             QTimer.singleShot(0, apply_sizes)
 
+        # 打开就把光标放进正文（像 Typora）：进来直接打字就能写。
+        # 之前焦点停在工具栏按钮上，用户不点正文区就什么也输不进去。
+        if not getattr(self, "_focus_placed", False):
+            self._focus_placed = True
+            QTimer.singleShot(0, self._focus_body)
+
+    def _focus_body(self) -> None:
+        if self._current_id is None or not self.isVisible():
+            return
+        fw = QApplication.focusWidget()
+        # 用户已经在别的输入框里打字（搜索框等）就别抢；标题框例外 ——
+        # 打开后按格式键/打字都该落到正文
+        if isinstance(fw, (QLineEdit, QTextEdit)) and fw is not self.title_edit:
+            return
+        self.editor.edit.setFocus()
+
     def closeEvent(self, event):  # noqa: N802
         try:
+            # 标题框的延迟提交和自动保存定时器都要先停：库随后就关了，
+            # 400ms 内再触发一次会撞上 "Cannot operate on a closed database"
+            self._title_timer.stop()
             self.editor.flush()
             if self._current_id is not None:
                 self.db._set_meta("last_node", str(self._current_id))

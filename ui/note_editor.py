@@ -1551,7 +1551,12 @@ class NoteEditor(QWidget):
         level = int(self.edit.textCursor().blockFormat().headingLevel())
         if level <= 0:
             return
-        self.set_heading(max(0, min(6, level + delta)))
+        # 只在 1~6 之间挪：H1 再"提升"、H6 再"降低"都停住不动，
+        # 回正文是 Ctrl+0 的事。toggle=False 避免目标级别撞上当前级别时被当成取消。
+        target = max(1, min(6, level + delta))
+        if target == level:
+            return
+        self.set_heading(target, toggle=False)
 
     def insert_table(self, rows: int = 3, cols: int = 3) -> None:
         cur = self.edit.textCursor()
@@ -1633,16 +1638,22 @@ class NoteEditor(QWidget):
         cur.endEditBlock()
         self.edit.setTextCursor(cur)
 
-    def set_heading(self, level: int) -> None:
-        """Ctrl+1~6 把光标所在行设为 N 级标题，Ctrl+0 回到正文。
+    def set_heading(self, level: int, toggle: bool = True) -> int:
+        """Ctrl+1~6：把光标所在行设为 N 级标题；同一级再按一次取消，回到正文。
 
-        与 Typora 一致：**幂等**。已经是该级标题时再按同一个键保持原样，
-        只有 Ctrl+0 才退回正文。以前写成"同级再按 → 切回正文"，结果用户
-        按第二下标题就没了，看起来就像"Ctrl+1 没把这一行变成标题 1"。
+        toggle=False 时不取消 —— Ctrl+= / Ctrl+- 调整级别走这条路，否则
+        在 H1 上按「提升」会因为"目标级别 == 当前级别"反而把标题清掉。
+
+        返回实际落到的级别（0 = 正文），供状态栏提示。
         """
         level = max(0, min(6, level))
         ed = self.edit
         cur = ed.textCursor()
+
+        if toggle and level:
+            cur_level = int(cur.blockFormat().headingLevel())
+            if cur_level == level:
+                level = 0                      # 同一级再按一次 → 退回正文
 
         # 列表项转标题前先从列表里摘出来，否则块同时是"列表项 + 标题"，
         # 存成 Markdown 会写成 `- # xxx`。
@@ -1678,7 +1689,7 @@ class NoteEditor(QWidget):
         fmt.setForeground(HEADING6_COLOR if level == 6 else QColor(P["note_text"]))
         fmt.setFontFamilies(list(UI_FONT_STACK))
         self._apply_format(fmt, whole_block=True)
-        self.edit.textCursor().endEditBlock()
+        return level
 
     def toggle_list(self, style) -> None:
         cur = self.edit.textCursor()
