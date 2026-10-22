@@ -7,7 +7,11 @@ cd "$(dirname "$0")"
 
 PY=python3
 APP_NAME="GuiZang"
-VERSION="1.0.0"
+# 版本号优先取当前 tag（v1.0.3 → 1.0.3），取不到再用默认值；
+# 可以用 GZ_VERSION=1.2.3 ./build_mac.sh 覆盖
+VERSION="${GZ_VERSION:-$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')}"
+VERSION="${VERSION:-1.0.3}"
+export GZ_VERSION="$VERSION"
 
 echo "==> 检查 Python 版本"
 $PY --version

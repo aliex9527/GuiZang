@@ -1,7 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 # macOS 打包配置：生成 GuiZang.app（双击运行，无需命令行）
 # 用法（在 macOS 上）：pyinstaller GuiZang_mac.spec --noconfirm
+import os
+
 from PyInstaller.utils.hooks import collect_submodules
+
+# 版本号由构建环境注入（CI 从 tag 派生），这样 app 内的版本和 dmg 文件名不会再对不上
+APP_VERSION = os.environ.get('GZ_VERSION', '1.0.3')
 
 hiddenimports = ['markdown.extensions.extra', 'markdown.extensions.sane_lists',
                  'markdown.extensions.nl2br', 'markdown.extensions.admonition',
@@ -61,8 +66,8 @@ app = BUNDLE(
     info_plist={
         'CFBundleName': '归藏',
         'CFBundleDisplayName': '归藏',
-        'CFBundleShortVersionString': '1.0.0',
-        'CFBundleVersion': '1.0.0',
+        'CFBundleShortVersionString': APP_VERSION,
+        'CFBundleVersion': APP_VERSION,
         'NSHighResolutionCapable': True,
         'LSMinimumSystemVersion': '10.14',
     },

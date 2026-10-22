@@ -29,6 +29,18 @@ jobs:
         with:
           python-version: '3.13'
 
+      - name: Resolve version
+        id: ver
+        run: |
+          # tag 触发时用 tag 名（v1.0.3 → 1.0.3），手动触发时沿用默认值
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="1.0.3"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "本次构建版本：$V"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -39,13 +51,17 @@ jobs:
           python tools/make_icon.py
 
       - name: Build .app
+        env:
+          GZ_VERSION: ${{ steps.ver.outputs.version }}
         run: |
           pyinstaller GuiZang_mac.spec --noconfirm --distpath dist --workpath build
 
       - name: Create DMG
+        env:
+          GZ_VERSION: ${{ steps.ver.outputs.version }}
         run: |
           APP_NAME="GuiZang"
-          VERSION="1.0.0"
+          VERSION="${GZ_VERSION}"
           ARCH="${{ matrix.arch }}"
           DMG_TMP="dist/dmg_tmp"
           rm -rf "$DMG_TMP"

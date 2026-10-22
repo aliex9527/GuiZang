@@ -41,7 +41,7 @@ git push -u origin main
    - `GuiZang-x64-dmg`（Intel 芯片 Mac 用）
    - `GuiZang-arm64-dmg`（Apple 芯片 M 系列 Mac 用）
 
-解压后就是 `GuiZang-1.0.0-*.dmg`，双击即可安装运行。
+解压后就是 `GuiZang-<版本>-*.dmg`（版本号取自触发用的 tag，如 `v1.0.3` → `GuiZang-1.0.3-x64.dmg`），双击即可安装运行。
 
 ## 三、判断你的 Mac 用哪个
 
@@ -51,7 +51,7 @@ git push -u origin main
 
 ## 四、说明
 
-- 触发方式：手动（Run workflow），或打 `v*` 标签（如 `v1.0.0`）自动触发。
+- 触发方式：手动（Run workflow），或打 `v*` 标签（如 `v1.0.3`）自动触发。版本号自动取自标签，不需要改代码。
 - 未签名：产物未做 Apple 签名/公证，首次运行若被拦截，右键 App → 打开 即可。
 - 想改成只出一个架构（更快），把 `.github/workflows/build-mac.yml` 里
   `matrix.include` 删掉不需要的那一行即可。
