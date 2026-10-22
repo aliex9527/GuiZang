@@ -1366,6 +1366,10 @@ class NoteEditor(QWidget):
             c.setPosition(block.position())
             c.setPosition(block.position() + block.length() - 1, QTextCursor.KeepAnchor)
             c.mergeCharFormat(fmt)
+            # 这个选区是我们自己造出来套格式用的，必须收掉。
+            # 留着的话，紧接着按回车（insertBlock）或打字会把整块当成"要替换的
+            # 内容"直接删掉 —— 表现为「设成标题1后再回车，整行文字消失」。
+            c.clearSelection()
             edit.setTextCursor(c)
             edit.mergeCurrentCharFormat(fmt)
             edit.setFocus()
@@ -1380,6 +1384,7 @@ class NoteEditor(QWidget):
             word.select(QTextCursor.WordUnderCursor)
             if word.hasSelection():
                 word.mergeCharFormat(fmt)
+                word.clearSelection()   # 同上：临时选区用完就收
                 edit.setTextCursor(word)
         edit.mergeCurrentCharFormat(fmt)
         edit.setFocus()
