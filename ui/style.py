@@ -202,7 +202,9 @@ QTreeWidget {{
     background: {PANEL};
     border: none;
     outline: none;
-    show-decoration-selected: 1;
+    /* 关掉"装饰区跟随选中"：否则选中行的缩进/分支区会被系统高亮色
+       涂成一整块实心蓝方块（QSS 的 ::item 背景盖不到这块）。 */
+    show-decoration-selected: 0;
 }}
 QTreeWidget::item {{
     height: 30px;

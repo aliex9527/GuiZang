@@ -1,10 +1,11 @@
-"""笔记编辑器（单控件，两种输入方式）。
+"""笔记编辑器（单一 Markdown 输入方式）。
 
-* 富文本模式：所见即所得，靠工具条排版
-* Markdown 模式：同样是所见即所得，但支持 Typora 式输入规则
-  —— 打 `# ` 变标题、`- ` 变列表、`**粗**` 自动加粗，标记就地消失
+所见即所得，但**只认 Markdown**：打 `# ` 变标题、`- ` 变列表、`**粗**`
+自动加粗，标记就地消失；外部粘贴的富文本（颜色、字体、下划线）一律剥离。
 
-两种模式共用同一个 QTextEdit，但**落库只存 Markdown 源码**：
+界面上没有任何"富文本排版"能力：不提供下划线、文字颜色、字号这些
+Markdown 没有对应语法的格式，编辑与保存是同一套语义。
+
 显示用富文本，保存时反向序列化成 Markdown（见 :mod:`ui.md_source`）。
 """
 
@@ -14,14 +15,14 @@ import re
 from typing import Callable, Optional, Tuple
 
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import (QBrush, QColor, QCursor, QFont, QImage, QPalette,
+from PySide6.QtGui import (QBrush, QColor, QFont, QImage, QPalette,
                            QTextBlockFormat, QTextCharFormat, QTextCursor, QTextDocument,
                            QTextFormat, QTextImageFormat, QTextListFormat, QTextTableFormat)
 from PySide6.QtWidgets import (QApplication, QFileDialog, QInputDialog, QMenu, QTextEdit,
                                QVBoxLayout, QWidget)
 
 from ui.markdown_render import md_to_html, preview_css
-from ui.md_source import (MANUAL_WIDTH_PROP, document_to_markdown,
+from ui.md_source import (HIGHLIGHT_BG, MANUAL_WIDTH_PROP, document_to_markdown,
                           markdown_to_html)
 from ui.theme import P
 from ui.fonts import UI_FONT_STACK
@@ -272,10 +273,16 @@ class MarkdownEdit(QTextEdit):
         return True
 
     def insertFromMimeData(self, source):  # noqa: N802
-        if self.md_rules and source.hasText():
+        if source.hasText():
             text = source.text()
-            if text and _MD_BLOCK_RE.search(text):
-                self.insertHtml(md_to_html(text))
+            if text:
+                # 只认文本：外部富文本（网页/Word 的颜色、字体、下划线、表格皮）
+                # 一律不落地，含块级 Markdown 语法的按 Markdown 渲染，其余按纯文本插入。
+                if self.md_rules and _MD_BLOCK_RE.search(text):
+                    self.insertHtml(md_to_html(text))
+                else:
+                    self.insertPlainText(text)
+                    self.flush_pending()   # 粘贴进来的行内标记就地渲染
                 return
         if source.hasImage():
             data = source.imageData()
@@ -1505,9 +1512,13 @@ class NoteEditor(QWidget):
         fmt.setFontItalic(not self.edit.fontItalic())
         self._merge(fmt)
 
-    def toggle_underline(self) -> None:
+    def toggle_highlight(self) -> None:
+        """==高亮==：给选区套高亮底色，落库时序列化成 ==文本==。"""
+        cur = self.edit.textCursor()
+        on = (cur.charFormat().background().color().name().lower()
+              == HIGHLIGHT_BG.lower())
         fmt = QTextCharFormat()
-        fmt.setFontUnderline(not self.edit.fontUnderline())
+        fmt.setBackground(QBrush(Qt.NoBrush) if on else QColor(HIGHLIGHT_BG))
         self._merge(fmt)
 
     def toggle_inline_code(self) -> None:
@@ -1521,13 +1532,6 @@ class NoteEditor(QWidget):
     def toggle_strike(self) -> None:
         fmt = QTextCharFormat()
         fmt.setFontStrikeOut(not self.edit.currentCharFormat().fontStrikeOut())
-        self._merge(fmt)
-
-    def apply_font_size(self, size: float) -> None:
-        if not 6 <= size <= 96:
-            return
-        fmt = QTextCharFormat()
-        fmt.setFontPointSize(size)
         self._merge(fmt)
 
     def change_heading_level(self, delta: int) -> None:
@@ -1644,29 +1648,6 @@ class NoteEditor(QWidget):
         fmt.setFontFamilies(list(UI_FONT_STACK))
         self._apply_format(fmt, whole_block=True)
         self.edit.textCursor().endEditBlock()
-
-    def _pick_color(self) -> None:
-        cur_color = self.edit.currentCharFormat().foreground().color()
-        color = QColorDialog.getColor(cur_color if cur_color.isValid() else QColor(P["note_text"]),
-                                      self, "选择文字颜色")
-        if color.isValid():
-            fmt = QTextCharFormat()
-            fmt.setForeground(color)
-            self._merge(fmt)
-
-    def _pick_highlight(self) -> None:
-        menu = QMenu(self)
-        for n, c in [("黄色", "#fff59d"), ("绿色", "#c8f7c5"), ("红色", "#ffd6d6"),
-                     ("蓝色", "#cfe3ff"), ("紫色", "#e8d9ff"), ("无", "transparent")]:
-            act = menu.addAction(n)
-            act.setData(c)
-        act = menu.exec(QCursor.pos())
-        if act is None:
-            return
-        c = act.data()
-        fmt = QTextCharFormat()
-        fmt.setBackground(QBrush(Qt.NoBrush) if c == "transparent" else QColor(c))
-        self._merge(fmt)
 
     def toggle_list(self, style) -> None:
         cur = self.edit.textCursor()

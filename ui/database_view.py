@@ -178,6 +178,7 @@ class DatabaseView(QWidget):
         self.tree.itemExpanded.connect(lambda i: self._on_expanded(i, True))
         self.tree.itemCollapsed.connect(lambda i: self._on_expanded(i, False))
         self.tree.structureChanged.connect(self._persist_tree)
+        self._sync_tree_palette()
 
         self.search_panel = SearchPanel(wrap)
         self.search_panel.nodeActivated.connect(self._goto_search_result)
@@ -186,6 +187,19 @@ class DatabaseView(QWidget):
         self.side_stack.addWidget(self.search_panel)
         lay.addWidget(self.side_stack, 1)
         return wrap
+
+    def _sync_tree_palette(self) -> None:
+        """让树的原生高亮（装饰区、拖放指示）也用主题浅蓝，而不是系统实心蓝。"""
+        from PySide6.QtGui import QColor, QPalette
+        pal = self.tree.palette()
+        soft = QColor(P["accent_soft"])
+        accent = QColor(P["accent"])
+        for group in (QPalette.Active, QPalette.Inactive):
+            pal.setColor(group, QPalette.Highlight, soft)
+            pal.setColor(group, QPalette.HighlightedText, accent)
+            pal.setColor(group, QPalette.Base, QColor(P["panel"]))
+            pal.setColor(group, QPalette.Window, QColor(P["panel"]))
+        self.tree.setPalette(pal)
 
     def _build_icon_strip(self, parent: QWidget) -> QWidget:
         """侧栏顶部那一排图标：对齐 myBase 大纲工具条的按钮组合。"""
@@ -574,14 +588,14 @@ class DatabaseView(QWidget):
         m.addSeparator()
         m.addAction("水平分割线\tCtrl+Shift+-", ed.insert_hr)
 
-        # ---- 格式
+        # ---- 格式（只保留 Markdown 有对应语法的项）
         m = mb.addMenu("格式(&O)")
         m.addAction("加粗\tCtrl+B", ed.toggle_bold)
         m.addAction("斜体\tCtrl+I", ed.toggle_italic)
-        m.addAction("下划线\tCtrl+U", ed.toggle_underline)
         m.addAction("删除线\tAlt+Shift+5", ed.toggle_strike)
         m.addAction("行内代码\tCtrl+Shift+`", ed.toggle_inline_code)
         m.addSeparator()
+        m.addAction("高亮\tCtrl+Shift+H", ed.toggle_highlight)
         m.addAction("超链接\tCtrl+K", ed.insert_link)
         m.addAction("图像\tCtrl+Shift+I", ed.insert_image)
         m.addSeparator()
@@ -849,6 +863,9 @@ class DatabaseView(QWidget):
             if key == Qt.Key_X:
                 ed.toggle_task()
                 return True
+            if key == Qt.Key_H:
+                ed.toggle_highlight()
+                return True
             if key == Qt.Key_Return or key == Qt.Key_Enter:
                 ed.toggle_task_state()
                 return True
@@ -887,9 +904,6 @@ class DatabaseView(QWidget):
             return True
         if key == Qt.Key_I:
             ed.toggle_italic()
-            return True
-        if key == Qt.Key_U:
-            ed.toggle_underline()
             return True
         if key == Qt.Key_K:
             ed.insert_link()
@@ -969,6 +983,7 @@ class DatabaseView(QWidget):
         self._apply_icon_theme()
         self.attachments.refresh()
         self.search_panel.list.viewport().update()
+        self._sync_tree_palette()
         self._sync_theme_checks(name)
         try:
             self.db.set_meta("ui.theme", theme.current())
