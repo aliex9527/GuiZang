@@ -1,5 +1,7 @@
 # 强制脚本和配置保持 LF 换行（避免 Windows 提交的 CRLF 在 macOS 上导致解释器错误）
 *.sh text eol=lf
+*.command text eol=lf
+*.bat text eol=crlf
 *.yml text eol=lf
 *.yaml text eol=lf
 *.spec text eol=lf
