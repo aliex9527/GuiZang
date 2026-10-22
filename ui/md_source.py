@@ -516,6 +516,12 @@ def _assemble(blocks: List[Tuple[str, str]]) -> str:
         if not body.strip():
             continue
         gap()
+        # 快捷键插进来的 ☐/☑ 是纯文本，不是真正的列表项，这里补回 md 语法
+        m = _TASK_OUT.match(body.strip())
+        if m:
+            lines.append("- [%s] %s" % ("x" if m.group(1) == "\u2611" else " ", m.group(2)))
+            lines.append("")
+            continue
         lines.extend(body.split("\n"))
         lines.append("")
 
