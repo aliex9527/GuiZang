@@ -1512,6 +1512,11 @@ class NoteEditor(QWidget):
         fmt.setFontItalic(not self.edit.fontItalic())
         self._merge(fmt)
 
+    def marked_highlight(self) -> bool:
+        """光标处是否已经带了高亮底色（用于状态栏反馈）。"""
+        return (self.edit.textCursor().charFormat().background().color().name().lower()
+                == HIGHLIGHT_BG.lower())
+
     def toggle_highlight(self) -> None:
         """==高亮==：给选区套高亮底色，落库时序列化成 ==文本==。"""
         cur = self.edit.textCursor()

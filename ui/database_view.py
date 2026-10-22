@@ -879,7 +879,13 @@ class DatabaseView(QWidget):
         选中条目后焦点可能还停在分类树、库标签栏或标题框上，
         这时按格式快捷键虽然改了文档，光标却不在正文里 —— 用户看到的就是
         "空笔记里按了没反应"。所以正文类快捷键先接管焦点再执行。
+
+        连条目都还没选的时候，直接开一个新条目，不然快捷键只能作用在
+        隐藏的空编辑器上，屏幕上什么都不会发生。
         """
+        if self._current_id is None:
+            self.new_node(False, rename=False)
+            return
         edit = self.editor.edit
         if edit.hasFocus():
             return
@@ -888,6 +894,14 @@ class DatabaseView(QWidget):
                                or self.search_box.isAncestorOf(fw)):
             return                      # 正在搜索框里打字，不抢
         edit.setFocus()
+
+    def _fmt_hint(self, name: str, on: bool) -> None:
+        """空行按格式键没有任何视觉变化，用状态栏说明一句，免得以为没生效。"""
+        cur = self.editor.edit.textCursor()
+        if cur.hasSelection():
+            return
+        self.status_message.emit(
+            f"{name}{'已开' if on else '已关'} · 继续输入即生效", 1800)
 
     def eventFilter(self, obj, event):  # noqa: N802
         if (event.type() == QEvent.KeyPress
@@ -938,6 +952,8 @@ class DatabaseView(QWidget):
             if key == Qt.Key_5 and mods & Qt.ShiftModifier:
                 self._ensure_body_focus()
                 ed.toggle_strike()
+                self._fmt_hint("删除线",
+                               ed.edit.textCursor().charFormat().fontStrikeOut())
                 return True
             return False
 
@@ -978,6 +994,12 @@ class DatabaseView(QWidget):
 
         # ---- 带 Shift 的组合
         if shift:
+            if key == Qt.Key_5:                 # Ctrl+Shift+5 也当删除线（习惯用这个的很多）
+                self._ensure_body_focus()
+                ed.toggle_strike()
+                self._fmt_hint("删除线",
+                               ed.edit.textCursor().charFormat().fontStrikeOut())
+                return True
             if key == Qt.Key_K:
                 self._ensure_body_focus()
                 ed.insert_code_block()
@@ -1001,6 +1023,8 @@ class DatabaseView(QWidget):
             if key == Qt.Key_H:
                 self._ensure_body_focus()
                 ed.toggle_highlight()
+                self._fmt_hint("高亮",
+                               self.editor.marked_highlight())
                 return True
             if key == Qt.Key_Return or key == Qt.Key_Enter:
                 self._ensure_body_focus()
@@ -1021,6 +1045,8 @@ class DatabaseView(QWidget):
             if key == Qt.Key_QuoteLeft:
                 self._ensure_body_focus()
                 ed.toggle_inline_code()
+                self._fmt_hint("行内代码",
+                               ed.edit.textCursor().charFormat().fontFixedPitch())
                 return True
             if key == Qt.Key_C:
                 self._ensure_body_focus()
@@ -1045,10 +1071,12 @@ class DatabaseView(QWidget):
         if key == Qt.Key_B:
             self._ensure_body_focus()
             ed.toggle_bold()
+            self._fmt_hint("加粗", ed.edit.fontWeight() > QFont.Normal)
             return True
         if key == Qt.Key_I:
             self._ensure_body_focus()
             ed.toggle_italic()
+            self._fmt_hint("斜体", ed.edit.fontItalic())
             return True
         if key == Qt.Key_K:
             self._ensure_body_focus()
@@ -1365,7 +1393,8 @@ class DatabaseView(QWidget):
 
     # ---------------------------------------------------------------- 新建
 
-    def new_node(self, child_of_current: bool = True, before: bool = False) -> None:
+    def new_node(self, child_of_current: bool = True, before: bool = False,
+                 rename: bool = True) -> None:
         parent_id: Optional[int] = None
         ref_index = None
         if self._current_id is not None:
@@ -1384,10 +1413,15 @@ class DatabaseView(QWidget):
         item = self._items.get(node_id)
         if item is not None:
             self.tree.scrollToItem(item)
-            self.tree.editItem(item, 0)
-        self.title_edit.setFocus()
-        self.title_edit.selectAll()
-        self.status_message.emit("已新建条目，输入标题即可", 3000)
+            if rename:
+                self.tree.editItem(item, 0)
+        if rename:
+            self.title_edit.setFocus()
+            self.title_edit.selectAll()
+            self.status_message.emit("已新建条目，输入标题即可", 3000)
+        else:
+            self.editor.edit.setFocus()
+            self.status_message.emit("已新建条目，直接开始写", 2500)
 
     def _rename_current(self) -> None:
         if self._current_id is None:

@@ -52,7 +52,7 @@ GROUPS = [
     ("格式", [
         ("Ctrl+B", "加粗"),
         ("Ctrl+I", "斜体"),
-        ("Alt+Shift+5", "删除线"),
+        ("Alt+Shift+5", "删除线（也认 Ctrl+Shift+5）"),
         ("Ctrl+Shift+`", "行内代码"),
         ("Ctrl+Shift+H", "高亮"),
         ("Ctrl+K", "超链接"),
