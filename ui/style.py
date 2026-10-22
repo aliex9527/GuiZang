@@ -213,12 +213,15 @@ QTreeWidget::item {{
     padding: 1px 2px;
     border-radius: 0;
     color: {TEXT};
+    background: transparent;
 }}
 QTreeWidget::item:hover {{
-    background: {ROW_HOVER};
+    /* 悬停底色同样由 delegate 画在内容区，避免和选中条宽度不一致 */
+    background: transparent;
 }}
 QTreeWidget::item:selected {{
-    background: {SELECT_BG};
+    /* 蓝条由 CategoryItemDelegate 只刷条目内容区，这里不设底色 */
+    background: transparent;
     color: {SELECT_FG};
 }}
 QTreeWidget::branch {{

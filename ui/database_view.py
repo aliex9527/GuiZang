@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 
-from PySide6.QtCore import QEvent, QPoint, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices, QFont,
                            QImage, QKeySequence, QPainter, QPainterPath, QPalette,
                            QPen, QShortcut, QTextListFormat)
@@ -19,7 +19,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QD
                                QInputDialog, QMenu,
                                QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QMessageBox, QProgressDialog,
-                               QSizePolicy, QSplitter, QStackedWidget, QToolBar,
+                               QSizePolicy, QSplitter, QStackedWidget, QStyle,
+                               QStyledItemDelegate, QToolBar,
                                QToolButton, QToolTip, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
@@ -53,27 +54,65 @@ class InstantToolButton(QToolButton):
         super().leaveEvent(event)
 
 
+class CategoryItemDelegate(QStyledItemDelegate):
+    """选中时只给条目内容区刷蓝条，前面的缩进/虚线区留白（照 myBase 的样子）。
+
+    delegate 拿到的 ``option.rect`` 是**内容区**（缩进之后到视口右边缘），
+    而 Qt 画的行底色是整行 —— 所以选中行要先把缩进区刷回面板色、把虚线
+    补画一遍，再给内容区上蓝条。
+    """
+
+    def __init__(self, tree: "CategoryTree"):
+        super().__init__(tree)
+        self._tree = tree
+
+    def paint(self, painter, option, index):
+        selected = bool(option.state & QStyle.State_Selected)
+        hovered = bool(option.state & QStyle.State_MouseOver)
+        if selected or hovered:
+            painter.save()
+            if selected:
+                gutter = QRect(0, option.rect.top(), option.rect.left(),
+                               option.rect.height())
+                painter.fillRect(gutter, QColor(P["panel"]))
+                self._tree.paint_branch_lines(painter, gutter, index)
+            painter.fillRect(option.rect,
+                             QColor(P["select_bg"] if selected else P["row_hover"]))
+            painter.restore()
+        super().paint(painter, option, index)
+
+
 class CategoryTree(QTreeWidget):
     """myBase 风格的分类树：层级虚线 + 整行实心蓝条 + 展开三角。"""
 
     structureChanged = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setItemDelegate(CategoryItemDelegate(self))
+        # delegate 要靠 State_MouseOver 画悬停底，得让 viewport 报鼠标位置
+        self.setMouseTracking(True)
+        self.viewport().setAttribute(Qt.WA_Hover, True)
 
     def dropEvent(self, event):  # noqa: N802
         super().dropEvent(event)
         self.structureChanged.emit()
 
     def drawBranches(self, painter, rect, index):  # noqa: N802
-        """自绘缩进区的虚线连接与展开标记。
+        """Qt 的 branch 钩子：只画线，不画任何底色。"""
+        self.paint_branch_lines(painter, rect, index)
+
+    def paint_branch_lines(self, painter, rect, index) -> None:
+        """在 ``rect``（缩进区）里画层级点线和展开三角。
 
         Qt 默认的 branch 绘制会被样式表接管成"一块实心色"，这里整段接管：
-        选中行连缩进一起填蓝，层级用竖直点线串起来，末级画 └ 拐到条目。
+        层级用竖直点线串起来，末级画 └ 拐到条目。选中行的缩进区由 delegate
+        刷白后回调本方法补线，所以这里不碰任何填充色。
         """
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
         model = self.model()
-        sel_model = self.selectionModel()
-        selected = bool(sel_model is not None and sel_model.isSelected(index))
 
         chain = [index]
         parent = index.parent()
@@ -85,9 +124,7 @@ class CategoryTree(QTreeWidget):
         ind = self.indentation()
         mid = ind // 2
         mid_y = rect.top() + rect.height() // 2
-        line = QColor(P["select_fg"] if selected else P["branch"])
-        if selected:
-            line.setAlpha(150)      # 蓝底上别用实白白，会抢视线
+        line = QColor(P["branch"])
         painter.setPen(QPen(line, 1, Qt.PenStyle.DotLine))
         painter.setBrush(Qt.BrushStyle.NoBrush)
 
@@ -105,7 +142,7 @@ class CategoryTree(QTreeWidget):
             cx = rect.left() + depth * ind + mid
             cy = mid_y
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(P["select_fg"]) if selected else line)
+            painter.setBrush(line)
             arrow = QPainterPath()
             if self.isExpanded(index):
                 arrow.moveTo(cx - 3.5, cy - 2.0)
