@@ -462,10 +462,25 @@ class MarkdownEdit(QTextEdit):
             self.viewport().update()
         return changed
 
+    def _looks_like_body(self, block) -> bool:
+        """块标着标题级别，但文字已被清成正文样式（≤11pt 常规）→ 视为坏状态。"""
+        seen = False
+        it = block.begin()
+        while not it.atEnd():
+            frag = it.fragment()
+            if frag.isValid() and frag.text().strip():
+                cf = frag.charFormat()
+                size = cf.fontPointSize()
+                if size <= 0 or size > 11.05 or cf.fontWeight() > QFont.Normal:
+                    return False
+                seen = True
+            it += 1
+        return seen
+
     def normalize_headings(self) -> bool:
-        """统一标题：纯文本 "# 行" 转真标题，已有标题的字号/间距拉到当前标准。"""
-        if not self.md_rules:
-            return False
+        """统一标题：纯文本 "# 行" 转真标题（仅 Markdown 模式），
+        已有标题的字号/间距拉到当前标准，并修复"标题块+正文字"的坏状态。"""
+        md = self.md_rules
         doc = self.document()
         was_modified = doc.isModified()
         self._applying = True
@@ -478,7 +493,8 @@ class MarkdownEdit(QTextEdit):
                 text = block.text()
                 in_code = bf.background().color().name().lower() == P["code_bg"]
                 level = int(bf.headingLevel())
-                if not in_code and level == 0 and block.textList() is None and text.startswith("#"):
+                if (md and not in_code and level == 0
+                        and block.textList() is None and text.startswith("#")):
                     m = _HEADING_RE.match(text)
                     if m:
                         cur = QTextCursor(block)
@@ -487,6 +503,19 @@ class MarkdownEdit(QTextEdit):
                         if self._apply_heading(len(m.group(1)), m.group(2)):
                             changed = True
                 elif not in_code and level > 0:
+                    # 历史 bug 留下的坏状态：块还是标题、文字却被清成正文（11pt 常规）。
+                    # 直接按标题字号重排会导致"保存后整篇突然变大加粗"，应降回正文。
+                    if self._looks_like_body(block):
+                        c = QTextCursor(block)
+                        nb = QTextBlockFormat(bf)
+                        nb.setHeadingLevel(0)
+                        nb.setLineHeight(0, QTextBlockFormat.LineHeightTypes.SingleHeight.value)
+                        nb.setTopMargin(8)
+                        nb.setBottomMargin(0)
+                        c.setBlockFormat(nb)
+                        changed = True
+                        block = block.next()
+                        continue
                     # 已有标题：字号/颜色/行高/段间距按当前标准重排（旧笔记升级）
                     want = HEADING_SIZES.get(level, 11.0)
                     want_color = HEADING6_COLOR if level == 6 else QColor(P["note_text"])
@@ -518,6 +547,15 @@ class MarkdownEdit(QTextEdit):
                         c = QTextCursor(block)
                         c.setBlockFormat(new_bf)
                         changed = True
+                elif (not in_code and level == 0 and block.textList() is None
+                        and bf.leftMargin() < 18
+                        and round(bf.topMargin()) == 16 and round(bf.bottomMargin()) == 16):
+                    # 旧版"标题取消"残留的标题段距：正文段落不该是 16/16
+                    nb = QTextBlockFormat(bf)
+                    nb.setTopMargin(8)
+                    nb.setBottomMargin(0)
+                    QTextCursor(block).setBlockFormat(nb)
+                    changed = True
                 block = block.next()
         finally:
             self.blockSignals(False)
@@ -1473,9 +1511,13 @@ class NoteEditor(QWidget):
         bf.setHeadingLevel(max(0, level))
         bf.setLeftMargin(0 if level else bf.leftMargin())
         bf.setIndent(0)
-        if level == 0:
-            # 从标题改回正文：清掉标题行高（SingleHeight 忽略该值）
+        if level:
+            self.edit._space(bf, level=level)      # 标题段距 16/16 + 行高
+        else:
+            # 切回正文：清掉标题行高与标题段距，否则段落还是标题式的空档
             bf.setLineHeight(0, QTextBlockFormat.LineHeightTypes.SingleHeight.value)
+            bf.setTopMargin(8)
+            bf.setBottomMargin(0)
         cur.setBlockFormat(bf)
 
         fmt = QTextCharFormat()
@@ -1549,6 +1591,32 @@ class NoteEditor(QWidget):
         fmt.setFontPointSize(11)
         fmt.setAnchor(False)
         cur.setCharFormat(fmt)
+        # 块级格式也要复位：只清字符格式会让块仍是标题，保存时导出 <h1>，
+        # 下次载入又被当成标题放大加粗 —— "编辑时正常、保存后变标题1"的根因。
+        self._reset_block_formats(cur.selectionStart(), cur.selectionEnd())
+
+    def _reset_block_formats(self, start: int, end: int) -> None:
+        """把区间内的段落格式还原成正文（去标题级别、引用底色、代码底色、缩进）。"""
+        doc = self.edit.document()
+        first = doc.findBlock(start)
+        last = doc.findBlock(max(start, end - 1))
+        b = first
+        while b.isValid():
+            bf = b.blockFormat()
+            nb = QTextBlockFormat(bf)
+            nb.setHeadingLevel(0)
+            nb.setIndent(0)
+            nb.setBackground(QBrush(Qt.NoBrush))
+            nb.setLineHeight(0, QTextBlockFormat.LineHeightTypes.SingleHeight.value)
+            if b.textList() is None:
+                nb.setLeftMargin(0)
+                nb.setTopMargin(8)
+                nb.setBottomMargin(0)
+            c = QTextCursor(b)
+            c.setBlockFormat(nb)
+            if b == last or not b.next().isValid():
+                break
+            b = b.next()
 
     def insert_link(self) -> None:
         cur = self.edit.textCursor()
