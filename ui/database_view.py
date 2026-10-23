@@ -33,37 +33,13 @@ from core.ui_state import DbState, splitter_sizes
 from core.storage import human_size
 from ui.attachments import AttachmentPanel
 from ui.icons import app_icon, file_icon, folder_icon, leaf_icon
+from ui.keymap import ACTIONS, Action, action_by_id
 from ui.note_editor import NoteEditor
 from ui.markdown_render import md_to_html
 from ui.search_panel import SearchPanel
 from ui.theme import P
 
 ROLE_ID = Qt.UserRole
-
-# Typora（Windows 版）的整套组合键。这里既是 QShortcut 的绑定表，
-# 也是 F1 一览里"段落/格式"两组的来源 —— 保证"表里写了的真的能按"。
-TYPORA_KEYS = [
-    # 无修饰
-    "F1", "F8", "F9", "F11",
-    # 条目操作
-    "Ctrl+Alt+Up", "Ctrl+Alt+Down", "Ctrl+Alt+N",
-    "Ctrl+Shift+S", "Ctrl+Shift+N", "Ctrl+Shift+A",
-    # 标题
-    "Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5", "Ctrl+6", "Ctrl+0",
-    "Ctrl+=", "Ctrl+-",
-    # 段落
-    "Ctrl+T", "Ctrl+Shift+K", "Ctrl+Shift+Q",
-    "Ctrl+Shift+[", "Ctrl+Shift+]", "Ctrl+Shift+X",
-    "Ctrl+Shift+Return", "Ctrl+Shift+Up", "Ctrl+Shift+Down",
-    "Ctrl+]", "Ctrl+[", "Ctrl+Shift+0",
-    # 行内格式
-    "Ctrl+B", "Ctrl+I", "Ctrl+U", "Alt+Shift+5", "Ctrl+Shift+5",
-    "Ctrl+Shift+`", "Ctrl+Shift+H", "Ctrl+K", "Ctrl+Shift+I",
-    "Ctrl+\\", "Ctrl+Shift+C", "Ctrl+Shift+V",
-    # 视图
-    "Ctrl+/", "Ctrl+D",
-]
-
 
 class InstantToolButton(QToolButton):
     """鼠标一移入就立即显示提示，移出即隐藏，替代 Qt 默认约 700ms 的 tooltip 延迟。"""
@@ -223,6 +199,8 @@ class DatabaseView(QWidget):
             app.installEventFilter(self)
 
         self._image_size_cache: dict = {}
+        self._shortcut_cache: Optional[dict] = None  # 已解析的自定义快捷键
+        self._key_handlers = self._make_key_handlers()
         self._build_ui()
         self._build_shortcuts()
         self.editor.edit.cursorPositionChanged.connect(self._sync_para_action)
@@ -359,7 +337,7 @@ class DatabaseView(QWidget):
 
         # 照 myBase 大纲工具条：关联 | 新建子项 | 前插入 | 后插入 | 上移 | 下移
         rel_menu = QMenu(strip)
-        rel_menu.addAction("收藏 / 取消收藏\tCtrl+D", self.toggle_star)
+        rel_menu.addAction(self._mtxt("toggle_star", "收藏 / 取消收藏"), self.toggle_star)
         rel_menu.addSeparator()
         sort_menu = QMenu("排序子条目", rel_menu)
         sort_menu.addAction("按名称 A → Z", lambda: self.sort_nodes("title", False))
@@ -591,41 +569,217 @@ class DatabaseView(QWidget):
         self.db_label_changed.emit(
             f"库文件 · {p.name} · {human_size(size)}", str(p))
 
-    def _build_shortcuts(self) -> None:
-        for keys, slot in (
-            ("Delete", self._delete_current),
-            ("F2", self._rename_current),
-        ):
-            sc = QShortcut(QKeySequence(keys), self)
-            sc.setContext(Qt.WindowShortcut)
-            sc.activated.connect(slot)
+    # ------------------------------------------------------------ 快捷键
 
-        # ---- Typora 全量组合键：走 Qt 原生 shortcut 通道
-        #
-        # 之前只在 QApplication 事件过滤器里认 KeyPress，这条路会被控件/输入法
-        # 提前吃掉（编辑器没焦点、焦点在标题框、窗格被空状态遮住时就会出现
-        # "按了没反应"）。QShortcut 是在 ShortcutOverride 阶段裁决的，
-        # 与焦点、与控件无关，只要窗口是活动窗口就一定到。
-        # 两路互斥：shortcut 命中后 KeyPress 不再下发，不会重复执行。
-        for seq in TYPORA_KEYS:
-            sc = QShortcut(QKeySequence(seq), self)
+    def _make_key_handlers(self) -> Dict[str, object]:
+        """把动作 id 映射到可调用对象（部分是 lambda，需要访问 self）。
+
+        注意：这里只是「动作 → 干什么」的声明；「哪个键触发哪个动作」由
+        :meth:`_current_shortcuts` 决定，二者解耦后才好做自定义改键。
+        """
+        return {
+            # 文件 / 条目
+            "new_child": lambda: self.new_node(True),
+            "new_sibling_after": lambda: self.new_node(False),
+            "new_sibling_before": lambda: self.new_node(False, before=True),
+            "open_library": self.open_library,
+            "focus_search": self._focus_search,
+            "save": self.save_now,
+            "backup": self.backup,
+            "add_attachment": self.pick_attachments,
+            "toggle_star": self.toggle_star,
+            "close_tab": self.close_requested.emit,
+            "move_up": lambda: self.move_item(-1),
+            "move_down": lambda: self.move_item(1),
+            # 编辑
+            "rename": self._rename_current,
+            "delete": self._delete_current,
+            # 标题
+            "heading1": lambda: self._set_heading(1),
+            "heading2": lambda: self._set_heading(2),
+            "heading3": lambda: self._set_heading(3),
+            "heading4": lambda: self._set_heading(4),
+            "heading5": lambda: self._set_heading(5),
+            "heading6": lambda: self._set_heading(6),
+            "para": lambda: self._set_heading(0),
+            "heading_level_up": lambda: self._change_heading_level(-1),
+            "heading_level_down": lambda: self._change_heading_level(1),
+            # 段落 / 块
+            "table": self.insert_table,
+            "code_block": lambda: (self._ensure_body_focus(), self.editor.insert_code_block()),
+            "quote": lambda: (self._ensure_body_focus(), self.editor.toggle_quote()),
+            "list_ordered": lambda: (self._ensure_body_focus(),
+                                     self.editor.toggle_list(QTextListFormat.ListDecimal)),
+            "list_unordered": lambda: (self._ensure_body_focus(),
+                                       self.editor.toggle_list(QTextListFormat.ListDisc)),
+            "task_list": lambda: (self._ensure_body_focus(), self.editor.toggle_task()),
+            "task_toggle": lambda: (self._ensure_body_focus(), self.editor.toggle_task_state()),
+            "para_above": lambda: (self._ensure_body_focus(), self.editor.insert_paragraph(True)),
+            "para_below": lambda: (self._ensure_body_focus(), self.editor.insert_paragraph(False)),
+            "indent": lambda: (self._ensure_body_focus(), self.editor.edit._indent_block(1)),
+            "outdent": lambda: (self._ensure_body_focus(), self.editor.edit._indent_block(-1)),
+            # 行内格式
+            "bold": lambda: self._toggle_bold(),
+            "italic": lambda: self._toggle_italic(),
+            "underline": lambda: self._toggle_underline(),
+            "strike": lambda: self._toggle_strike(),
+            "inline_code": lambda: self._toggle_inline_code(),
+            "highlight": lambda: self._toggle_highlight(),
+            "link": lambda: (self._ensure_body_focus(), self.editor.insert_link()),
+            "image": lambda: (self._ensure_body_focus(), self.editor.insert_image()),
+            "clear_format": lambda: (self._ensure_body_focus(), self.editor.clear_format()),
+            "copy_md": lambda: (self._ensure_body_focus(), self.editor.copy_as_markdown()),
+            "paste_plain": lambda: (self._ensure_body_focus(), self.editor.paste_plain()),
+            # 视图
+            "source_mode": self.toggle_source_mode,
+            "focus_mode": self.toggle_focus_mode,
+            "typewriter": self.toggle_typewriter,
+            "fullscreen": self._toggle_fullscreen,
+            "zoom_in": lambda: self._zoom(1),
+            "zoom_out": lambda: self._zoom(-1),
+            "zoom_reset": lambda: self._zoom(0),
+            "find": lambda: self.show_find(False),
+            "replace": lambda: self.show_find(True),
+            # 帮助
+            "shortcuts": self._show_shortcuts,
+        }
+
+    def _current_shortcuts(self) -> Dict[str, str]:
+        """当前生效的「动作 → 键序列」映射（用户自定义覆盖默认值）。
+
+        自定义值为空串（meta 里记作 ``off``）表示**禁用**该动作的快捷键。
+        结果缓存在 ``self._shortcut_cache``；用户改完键后调用
+        :meth:`reload_shortcuts` 清缓存并重建绑定。
+        """
+        if self._shortcut_cache is not None:
+            return self._shortcut_cache
+        custom = self._read_custom_shortcuts()
+        result: Dict[str, str] = {}
+        for a in ACTIONS:
+            v = custom.get(a.id)
+            if v is None:
+                result[a.id] = a.default
+            elif v == "off":
+                result[a.id] = ""
+            else:
+                result[a.id] = v
+        self._shortcut_cache = result
+        return result
+
+    def _read_custom_shortcuts(self) -> Dict[str, str]:
+        """从库 meta 读自定义快捷键（JSON：{action_id: 键序列}）。"""
+        import json
+        raw = self.settings.value("shortcuts", "", str)
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        valid = {a.id for a in ACTIONS}
+        return {k: v for k, v in data.items()
+                if k in valid and isinstance(v, str) and v
+                and (v == "off" or QKeySequence(v).count())}
+
+    def _write_custom_shortcuts(self, mapping: Dict[str, str]) -> None:
+        """把自定义快捷键写进库 meta（空值=禁用记作 off；恢复默认的不落盘）。"""
+        import json
+        data = {}
+        for k, v in mapping.items():
+            try:
+                default = action_by_id(k).default
+            except KeyError:
+                continue
+            if not v:
+                if default:
+                    data[k] = "off"          # 显式禁用
+            elif v != default:
+                data[k] = v
+        self.settings.setValue("shortcuts", json.dumps(data, ensure_ascii=False))
+
+    def key_for_action(self, action_id: str) -> str:
+        """某动作当前绑定的键（给设置对话框 / F1 一览用）。"""
+        return self._current_shortcuts().get(action_id, action_by_id(action_id).default)
+
+    def reload_shortcuts(self) -> None:
+        """清缓存并重建 QShortcut 绑定（改完键后调用）。"""
+        self._shortcut_cache = None
+        # 移除旧绑定后重建
+        for sc in getattr(self, "_bound_shortcuts", []):
+            sc.setParent(None)
+        self._bound_shortcuts = []
+        self._build_shortcuts()
+
+    def _build_shortcuts(self) -> None:
+        # 收集当前生效的所有键 → 动作 id（键统一规范化成 NativeText 字符串）
+        key_to_action: Dict[str, str] = {}
+
+        def norm(seq: str) -> str:
+            ks = QKeySequence(seq)
+            return ks.toString(QKeySequence.NativeText) if ks.count() else ""
+
+        for aid, seq in self._current_shortcuts().items():
+            n = norm(seq)
+            if n:
+                key_to_action[n] = aid
+        # 别名键也触发同一动作（兼容肌肉记忆，如 Ctrl+Q → 关闭、Ctrl+Shift+5 → 删除线）
+        for a in ACTIONS:
+            for alias in a.aliases:
+                key_to_action.setdefault(norm(alias), a.id)
+
+        self._key_to_action = key_to_action
+        self._bound_shortcuts = []
+        for seq, aid in key_to_action.items():
+            ks = QKeySequence(seq)
+            if ks.count() == 0:
+                continue
+            sc = QShortcut(ks, self)
             sc.setContext(Qt.ApplicationShortcut)
             sc.setAutoRepeat(False)
-            sc.activated.connect(lambda s=sc.key(): self._dispatch_shortcut(s))
+            sc.activated.connect(lambda a=aid: self._dispatch_action(a))
+            self._bound_shortcuts.append(sc)
 
-    def _dispatch_shortcut(self, ks) -> None:
-        """把命中的 QShortcut 转成一次按键，交给统一的快捷键分发器。"""
+    def _dispatch_key(self, event) -> bool:
+        """KeyPress 兜底通道：把按键事件按当前键表裁决一次。"""
+        key, mods = event.key(), int(event.modifiers())
+        if key in (Qt.Key_unknown, Qt.Key_Shift, Qt.Key_Control,
+                   Qt.Key_Alt, Qt.Key_Meta):
+            return False
+        seq = QKeySequence(mods | int(key))
+        if seq.count() == 0:
+            return False
+        aid = self._key_to_action.get(seq.toString(QKeySequence.NativeText))
+        if aid is None:
+            return False
+        if not self.isVisible() or QApplication.activeModalWidget() is not None:
+            return False
+        handler = self._key_handlers.get(aid)
+        if handler is not None:
+            handler()
+            return True
+        return False
+
+    def _dispatch_action(self, aid: str) -> None:
+        """把命中的动作 id 交给处理器（QShortcut 命中时调用）。"""
         if not self.isVisible():
             return                       # 多标签库里只有当前视图该响应
         if QApplication.activeModalWidget() is not None:
             return
-        if isinstance(ks, str):
-            ks = QKeySequence(ks)
-        if ks.count() == 0:
-            return
-        c = ks[0]
-        ev = QKeyEvent(QEvent.KeyPress, c.key(), c.keyboardModifiers())
-        self._handle_shortcut(ev)
+        handler = self._key_handlers.get(aid)
+        if handler is not None:
+            handler()
+
+    @staticmethod
+    def _pretty(seq: str) -> str:
+        """把 QKeySequence 的键名换成菜单里惯用的符号显示。"""
+        return (seq.replace("Up", "↑").replace("Down", "↓")
+                   .replace("Return", "Enter").replace("Backspace", "退格"))
+
+    def _mtxt(self, aid: str, name: str) -> str:
+        """菜单项文本：名称 + 当前生效的快捷键（自定义后菜单跟着变）。"""
+        return f"{name}\t{self._pretty(self.key_for_action(aid))}"
 
     def build_menus(self, mb) -> None:
         """菜单与快捷键对齐 Typora（Windows 版）。"""
@@ -634,26 +788,27 @@ class DatabaseView(QWidget):
 
         # ---- 文件
         m = mb.addMenu("文件(&F)")
-        m.addAction("新建子条目\tCtrl+Alt+N", lambda: self.new_node(True))
-        m.addAction("新建同级（后）\tCtrl+N", lambda: self.new_node(False))
-        m.addAction("新建同级（前）\tCtrl+Shift+N",
+        m.addAction(self._mtxt("new_child", "新建子条目"), lambda: self.new_node(True))
+        m.addAction(self._mtxt("new_sibling_after", "新建同级（后）"), lambda: self.new_node(False))
+        m.addAction(self._mtxt("new_sibling_before", "新建同级（前）"),
                     lambda: self.new_node(False, before=True))
         m.addSeparator()
-        m.addAction("打开资料库…\tCtrl+O", self.open_library)
-        m.addAction("快速打开…\tCtrl+P", self._focus_search)
+        m.addAction(self._mtxt("open_library", "打开资料库…"), self.open_library)
+        m.addAction(self._mtxt("focus_search", "快速打开…"), self._focus_search)
         m.addAction("新建资料库…", self.new_library)
         m.addSeparator()
-        m.addAction("保存\tCtrl+S", self.save_now)
-        m.addAction("备份资料库到文件…\tCtrl+Shift+S", self.backup)
+        m.addAction(self._mtxt("save", "保存"), self.save_now)
+        m.addAction(self._mtxt("backup", "备份资料库到文件…"), self.backup)
         m.addAction("精简数据库（压缩并整理）", self.compact_db)
         m.addAction("在资源管理器中显示库文件", self.reveal_db)
         m.addSeparator()
         m.addAction("导出此条目…", lambda: self.export_node(self._current_id)
                     if self._current_id else None)
-        m.addAction("添加附件…\tCtrl+Shift+A", self.pick_attachments)
+        m.addAction(self._mtxt("add_attachment", "添加附件…"), self.pick_attachments)
         m.addAction("导入文件夹为分类…", self.import_folder)
+        m.addAction("导入 Markdown 文件…", self.import_markdown)
         m.addSeparator()
-        m.addAction("退出\tCtrl+Q", self.close_requested.emit)
+        m.addAction(self._mtxt("close_tab", "退出"), self.close_requested.emit)
 
         # ---- 编辑
         m = mb.addMenu("编辑(&E)")
@@ -663,28 +818,30 @@ class DatabaseView(QWidget):
         m.addAction("剪切\tCtrl+X", ed.edit.cut)
         m.addAction("复制\tCtrl+C", ed.edit.copy)
         m.addAction("粘贴\tCtrl+V", ed.edit.paste)
-        m.addAction("复制为 Markdown\tCtrl+Shift+C", ed.copy_as_markdown)
-        m.addAction("粘贴为纯文本\tCtrl+Shift+V", ed.paste_plain)
+        m.addAction(self._mtxt("copy_md", "复制为 Markdown"), ed.copy_as_markdown)
+        m.addAction(self._mtxt("paste_plain", "粘贴为纯文本"), ed.paste_plain)
         m.addSeparator()
         m.addAction("全选\tCtrl+A", ed.edit.selectAll)
         m.addSeparator()
-        m.addAction("查找…\tCtrl+F", lambda: self.show_find(False))
-        m.addAction("替换…\tCtrl+H", lambda: self.show_find(True))
+        m.addAction(self._mtxt("find", "查找…"), lambda: self.show_find(False))
+        m.addAction(self._mtxt("replace", "替换…"), lambda: self.show_find(True))
         m.addSeparator()
-        m.addAction("重命名条目\tF2", self._rename_current)
+        m.addAction(self._mtxt("rename", "重命名条目"), self._rename_current)
         m.addAction("删除条目", self._delete_current)
+        m.addSeparator()
+        m.addAction("自定义快捷键…", self._open_keymap_settings)
 
         # ---- 整理（对齐 myBase 的「整理」菜单）
         m = mb.addMenu("整理(&R)")
-        m.addAction("添加子项\tCtrl+Alt+N", lambda: self.new_node(True))
-        m.addAction("添加项（前面）\tCtrl+Shift+N",
+        m.addAction(self._mtxt("new_child", "添加子项"), lambda: self.new_node(True))
+        m.addAction(self._mtxt("new_sibling_before", "添加项（前面）"),
                     lambda: self.new_node(False, before=True))
-        m.addAction("添加项（后面）\tCtrl+N", lambda: self.new_node(False))
+        m.addAction(self._mtxt("new_sibling_after", "添加项（后面）"), lambda: self.new_node(False))
         m.addSeparator()
-        m.addAction("收藏 / 取消收藏\tCtrl+D", self.toggle_star)
+        m.addAction(self._mtxt("toggle_star", "收藏 / 取消收藏"), self.toggle_star)
         m_move = m.addMenu("移动")
-        m_move.addAction("上移\tCtrl+Alt+↑", lambda: self.move_item(-1))
-        m_move.addAction("下移\tCtrl+Alt+↓", lambda: self.move_item(1))
+        m_move.addAction(self._mtxt("move_up", "上移"), lambda: self.move_item(-1))
+        m_move.addAction(self._mtxt("move_down", "下移"), lambda: self.move_item(1))
         m_move.addAction("移到顶层", self.move_to_top)
         m_sort = m.addMenu("排序子项")
         m_sort.addAction("按名称 A → Z", lambda: self.sort_nodes("title", False))
@@ -710,57 +867,58 @@ class DatabaseView(QWidget):
         m = mb.addMenu("段落(&P)")
         names = {1: "一", 2: "二", 3: "三", 4: "四", 5: "五", 6: "六"}
         for lv in range(1, 7):
-            m.addAction(f"{names[lv]}级标题\tCtrl+{lv}",
+            m.addAction(f"{names[lv]}级标题\t"
+                        f"{self._pretty(self.key_for_action('heading' + str(lv)))}",
                         lambda _c=False, n=lv: ed.set_heading(n))
         m.addSeparator()
-        self.act_para = m.addAction("段落\tCtrl+0", lambda: ed.set_heading(0))
+        self.act_para = m.addAction(self._mtxt("para", "段落"), lambda: ed.set_heading(0))
         self.act_para.setCheckable(True)
         self.act_para.setChecked(True)
         m.addSeparator()
-        m.addAction("提升标题级别\tCtrl+=", lambda: ed.change_heading_level(-1))
-        m.addAction("降低标题级别\tCtrl+-", lambda: ed.change_heading_level(1))
+        m.addAction(self._mtxt("heading_level_up", "提升标题级别"), lambda: ed.change_heading_level(-1))
+        m.addAction(self._mtxt("heading_level_down", "降低标题级别"), lambda: ed.change_heading_level(1))
         m.addSeparator()
-        m.addAction("表格\tCtrl+T", self.insert_table)
-        m.addAction("代码块\tCtrl+Shift+K", ed.insert_code_block)
-        m.addAction("引用\tCtrl+Shift+Q", ed.toggle_quote)
+        m.addAction(self._mtxt("table", "表格"), self.insert_table)
+        m.addAction(self._mtxt("code_block", "代码块"), ed.insert_code_block)
+        m.addAction(self._mtxt("quote", "引用"), ed.toggle_quote)
         m.addSeparator()
-        m.addAction("有序列表\tCtrl+Shift+[",
+        m.addAction(self._mtxt("list_ordered", "有序列表"),
                     lambda: ed.toggle_list(QTextListFormat.ListDecimal))
-        m.addAction("无序列表\tCtrl+Shift+]",
+        m.addAction(self._mtxt("list_unordered", "无序列表"),
                     lambda: ed.toggle_list(QTextListFormat.ListDisc))
-        m.addAction("任务列表\tCtrl+Shift+X", ed.toggle_task)
-        m.addAction("切换任务状态\tCtrl+Shift+Enter", ed.toggle_task_state)
+        m.addAction(self._mtxt("task_list", "任务列表"), ed.toggle_task)
+        m.addAction(self._mtxt("task_toggle", "切换任务状态"), ed.toggle_task_state)
         m.addSeparator()
-        m.addAction("增加缩进\tCtrl+]", lambda: ed.edit._indent_block(1))
-        m.addAction("减少缩进\tCtrl+[", lambda: ed.edit._indent_block(-1))
+        m.addAction(self._mtxt("indent", "增加缩进"), lambda: ed.edit._indent_block(1))
+        m.addAction(self._mtxt("outdent", "减少缩进"), lambda: ed.edit._indent_block(-1))
         m.addSeparator()
-        m.addAction("在上方插入段落\tCtrl+Shift+Up", lambda: ed.insert_paragraph(True))
-        m.addAction("在下方插入段落\tCtrl+Shift+Down", lambda: ed.insert_paragraph(False))
+        m.addAction(self._mtxt("para_above", "在上方插入段落"), lambda: ed.insert_paragraph(True))
+        m.addAction(self._mtxt("para_below", "在下方插入段落"), lambda: ed.insert_paragraph(False))
         m.addSeparator()
         m.addAction("水平分割线", ed.insert_hr)
 
         # ---- 格式（只保留 Markdown 有对应语法的项）
         m = mb.addMenu("格式(&O)")
-        m.addAction("加粗\tCtrl+B", ed.toggle_bold)
-        m.addAction("斜体\tCtrl+I", ed.toggle_italic)
-        m.addAction("下划线\tCtrl+U", ed.toggle_underline)
-        m.addAction("删除线\tAlt+Shift+5", ed.toggle_strike)
-        m.addAction("行内代码\tCtrl+Shift+`", ed.toggle_inline_code)
+        m.addAction(self._mtxt("bold", "加粗"), ed.toggle_bold)
+        m.addAction(self._mtxt("italic", "斜体"), ed.toggle_italic)
+        m.addAction(self._mtxt("underline", "下划线"), ed.toggle_underline)
+        m.addAction(self._mtxt("strike", "删除线"), ed.toggle_strike)
+        m.addAction(self._mtxt("inline_code", "行内代码"), ed.toggle_inline_code)
         m.addSeparator()
-        m.addAction("高亮\tCtrl+Shift+H", ed.toggle_highlight)
-        m.addAction("超链接\tCtrl+K", ed.insert_link)
-        m.addAction("图像\tCtrl+Shift+I", ed.insert_image)
+        m.addAction(self._mtxt("highlight", "高亮"), ed.toggle_highlight)
+        m.addAction(self._mtxt("link", "超链接"), ed.insert_link)
+        m.addAction(self._mtxt("image", "图像"), ed.insert_image)
         m.addSeparator()
-        m.addAction("清除格式\tCtrl+\\", ed.clear_format)
+        m.addAction(self._mtxt("clear_format", "清除格式"), ed.clear_format)
 
         # ---- 视图
         m = mb.addMenu("视图(&V)")
-        self.act_source = m.addAction("源码模式\tCtrl+/", self.toggle_source_mode)
+        self.act_source = m.addAction(self._mtxt("source_mode", "源码模式"), self.toggle_source_mode)
         self.act_source.setCheckable(True)
         m.addSeparator()
-        self.act_focus = m.addAction("专注模式\tF8", self.toggle_focus_mode)
+        self.act_focus = m.addAction(self._mtxt("focus_mode", "专注模式"), self.toggle_focus_mode)
         self.act_focus.setCheckable(True)
-        self.act_typewriter = m.addAction("打字机模式\tF9", self.toggle_typewriter)
+        self.act_typewriter = m.addAction(self._mtxt("typewriter", "打字机模式"), self.toggle_typewriter)
         self.act_typewriter.setCheckable(True)
         m.addSeparator()
         self.act_side = m.addAction("显示分类栏")
@@ -779,11 +937,11 @@ class DatabaseView(QWidget):
         m.addAction("全部展开", self._expand_all)
         m.addAction("全部折叠", self._collapse_all)
         m.addSeparator()
-        m.addAction("放大\tCtrl+Shift+=", lambda: self._zoom(1))
-        m.addAction("缩小\tCtrl+Shift+-", lambda: self._zoom(-1))
-        m.addAction("实际大小\tCtrl+Shift+0", lambda: self._zoom(0))
+        m.addAction(self._mtxt("zoom_in", "放大"), lambda: self._zoom(1))
+        m.addAction(self._mtxt("zoom_out", "缩小"), lambda: self._zoom(-1))
+        m.addAction(self._mtxt("zoom_reset", "实际大小"), lambda: self._zoom(0))
         m.addSeparator()
-        m.addAction("全屏\tF11", self._toggle_fullscreen)
+        m.addAction(self._mtxt("fullscreen", "全屏"), self._toggle_fullscreen)
 
         # ---- 主题
         m_theme = mb.addMenu("主题(&T)")
@@ -915,6 +1073,10 @@ class DatabaseView(QWidget):
         from ui.shortcuts_dialog import ShortcutsDialog
         ShortcutsDialog(self).exec()
 
+    def _open_keymap_settings(self) -> None:
+        from ui.keymap_dialog import KeymapDialog
+        KeymapDialog(self, self).exec()
+
     # ------------------------------------------------------- 编辑器快捷键
 
     def _owns_widget(self, obj) -> bool:
@@ -958,6 +1120,59 @@ class DatabaseView(QWidget):
         self.status_message.emit(
             f"{name}{'已开' if on else '已关'} · 继续输入即生效", 1800)
 
+    # ---- 标题与格式动作（供数据驱动的快捷键分发调用）
+
+    def _set_heading(self, level: int) -> None:
+        self._ensure_body_focus()
+        ed = self.editor
+        if level == 0:
+            ed.set_heading(0)
+            self.status_message.emit("已回到正文", 1400)
+            return
+        applied = ed.set_heading(level)
+        if applied:
+            self.status_message.emit(f"已设为标题 {applied} · 再按一次取消", 1600)
+        else:
+            self.status_message.emit("已回到正文", 1400)
+
+    def _change_heading_level(self, delta: int) -> None:
+        self._ensure_body_focus()
+        self.editor.change_heading_level(delta)
+
+    def _toggle_bold(self) -> None:
+        self._ensure_body_focus()
+        self.editor.toggle_bold()
+        self._fmt_hint("加粗",
+                       self.editor.edit.textCursor().charFormat().fontWeight() > QFont.Normal)
+
+    def _toggle_italic(self) -> None:
+        self._ensure_body_focus()
+        self.editor.toggle_italic()
+        self._fmt_hint("斜体", self.editor.edit.textCursor().charFormat().fontItalic())
+
+    def _toggle_underline(self) -> None:
+        self._ensure_body_focus()
+        self.editor.toggle_underline()
+        self._fmt_hint("下划线",
+                       self.editor.edit.textCursor().charFormat().fontUnderline())
+
+    def _toggle_strike(self) -> None:
+        self._ensure_body_focus()
+        self.editor.toggle_strike()
+        self._fmt_hint("删除线",
+                       self.editor.edit.textCursor().charFormat().fontStrikeOut())
+
+    def _toggle_inline_code(self) -> None:
+        self._ensure_body_focus()
+        self.editor.toggle_inline_code()
+        self._fmt_hint("行内代码",
+                       self.editor.edit.textCursor().charFormat().fontFixedPitch())
+
+    def _toggle_highlight(self) -> None:
+        self._ensure_body_focus()
+        self.editor.toggle_highlight()
+        self._fmt_hint("高亮", self.editor.marked_highlight())
+
     def eventFilter(self, obj, event):  # noqa: N802
         # 空状态页直接点一下就开写：不然用户点正文区既没有焦点也打不了字
         # （过滤器在 _build_ui 之前就装了，empty_hint 可能还不存在）
@@ -969,236 +1184,11 @@ class DatabaseView(QWidget):
                 and QApplication.activeModalWidget() is None
                 and QApplication.activePopupWidget() is None
                 and self._owns_widget(obj)):
-            if self._handle_shortcut(event):
+            # 兜底通道：个别控件可能在 ShortcutOverride 阶段抢走按键，
+            # QShortcut 没接住时在这里按当前键表再裁决一次（尊重自定义改键）
+            if self._dispatch_key(event):
                 return True
         return super().eventFilter(obj, event)
-
-    def _handle_shortcut(self, event) -> bool:
-        """Typora 风格快捷键：统一在窗口层处理，不挑焦点。"""
-        ed = self.editor
-        key = event.key()
-        mods = event.modifiers()
-
-        # ---- 无修饰的功能键
-        if mods == Qt.NoModifier:
-            if key == Qt.Key_F1:
-                self._show_shortcuts()
-                return True
-            if key == Qt.Key_F8:
-                self.toggle_focus_mode()
-                return True
-            if key == Qt.Key_F9:
-                self.toggle_typewriter()
-                return True
-            if key == Qt.Key_F11:
-                self._toggle_fullscreen()
-                return True
-            return False
-
-        # ---- Ctrl+Alt+↑/↓ 移动条目
-        if mods & Qt.AltModifier and mods & Qt.ControlModifier:
-            if key == Qt.Key_Up:
-                self.move_item(-1)
-                return True
-            if key == Qt.Key_Down:
-                self.move_item(1)
-                return True
-            if key == Qt.Key_N:
-                self.new_node(True)
-                return True
-            return False
-
-        # ---- Alt+Shift+5 删除线
-        if mods & Qt.AltModifier:
-            if key == Qt.Key_5 and mods & Qt.ShiftModifier:
-                self._ensure_body_focus()
-                ed.toggle_strike()
-                self._fmt_hint("删除线",
-                               ed.edit.textCursor().charFormat().fontStrikeOut())
-                return True
-            return False
-
-        if not (mods & Qt.ControlModifier):
-            return False
-
-        shift = bool(mods & Qt.ShiftModifier)
-
-        # ---- 视图缩放（先于标题判断，避免 Ctrl+Shift+0 被当成正文）
-        if shift and key == Qt.Key_0:
-            self._zoom(0)
-            return True
-
-        # ---- 标题：Ctrl+1~6 设为 N 级，同一级再按一次取消；Ctrl+0 也是正文
-        if not shift and Qt.Key_1 <= key <= Qt.Key_6:
-            self._ensure_body_focus()
-            lv = key - Qt.Key_0
-            applied = ed.set_heading(lv)
-            if applied:
-                self.status_message.emit(
-                    f"已设为标题 {applied} · 再按一次取消", 1600)
-            else:
-                self.status_message.emit("已回到正文", 1400)
-            return True
-        if not shift and key == Qt.Key_0:
-            self._ensure_body_focus()
-            ed.set_heading(0)
-            self.status_message.emit("已回到正文", 1400)
-            return True
-
-        # ---- 缩放 / 升降级
-        if key in (Qt.Key_Equal, Qt.Key_Plus):
-            if shift:
-                self._zoom(1)
-            else:
-                self._ensure_body_focus()
-                ed.change_heading_level(-1)
-            return True
-        if key in (Qt.Key_Minus, Qt.Key_Underscore):
-            if shift:
-                self._zoom(-1)              # 与 Typora 一致：Ctrl+Shift+- 是缩小
-            else:
-                self._ensure_body_focus()
-                ed.change_heading_level(1)
-            return True
-
-        # ---- 带 Shift 的组合
-        if shift:
-            if key == Qt.Key_5:                 # Ctrl+Shift+5 也当删除线（习惯用这个的很多）
-                self._ensure_body_focus()
-                ed.toggle_strike()
-                self._fmt_hint("删除线",
-                               ed.edit.textCursor().charFormat().fontStrikeOut())
-                return True
-            if key == Qt.Key_K:
-                self._ensure_body_focus()
-                ed.insert_code_block()
-                return True
-            if key == Qt.Key_Q:
-                self._ensure_body_focus()
-                ed.toggle_quote()
-                return True
-            if key == Qt.Key_BracketLeft:
-                self._ensure_body_focus()
-                ed.toggle_list(QTextListFormat.ListDecimal)
-                return True
-            if key == Qt.Key_BracketRight:
-                self._ensure_body_focus()
-                ed.toggle_list(QTextListFormat.ListDisc)
-                return True
-            if key == Qt.Key_X:
-                self._ensure_body_focus()
-                ed.toggle_task()
-                return True
-            if key == Qt.Key_H:
-                self._ensure_body_focus()
-                ed.toggle_highlight()
-                self._fmt_hint("高亮",
-                               self.editor.marked_highlight())
-                return True
-            if key == Qt.Key_Return or key == Qt.Key_Enter:
-                self._ensure_body_focus()
-                ed.toggle_task_state()
-                return True
-            if key == Qt.Key_Up:
-                self._ensure_body_focus()
-                ed.insert_paragraph(True)
-                return True
-            if key == Qt.Key_Down:
-                self._ensure_body_focus()
-                ed.insert_paragraph(False)
-                return True
-            if key == Qt.Key_I:
-                self._ensure_body_focus()
-                ed.insert_image()
-                return True
-            if key == Qt.Key_QuoteLeft:
-                self._ensure_body_focus()
-                ed.toggle_inline_code()
-                self._fmt_hint("行内代码",
-                               ed.edit.textCursor().charFormat().fontFixedPitch())
-                return True
-            if key == Qt.Key_C:
-                self._ensure_body_focus()
-                ed.copy_as_markdown()
-                return True
-            if key == Qt.Key_V:
-                self._ensure_body_focus()
-                ed.paste_plain()
-                return True
-            if key == Qt.Key_S:
-                self.backup()
-                return True
-            if key == Qt.Key_N:
-                self.new_node(False, before=True)   # myBase: 新建同级（前面）
-                return True
-            if key == Qt.Key_A:
-                self.pick_attachments()
-                return True
-            return False
-
-        # ---- Ctrl 单键
-        if key == Qt.Key_B:
-            self._ensure_body_focus()
-            ed.toggle_bold()
-            self._fmt_hint("加粗", ed.edit.textCursor().charFormat().fontWeight() > QFont.Normal)
-            return True
-        if key == Qt.Key_I:
-            self._ensure_body_focus()
-            ed.toggle_italic()
-            self._fmt_hint("斜体", ed.edit.textCursor().charFormat().fontItalic())
-            return True
-        if key == Qt.Key_U:
-            self._ensure_body_focus()
-            ed.toggle_underline()
-            self._fmt_hint("下划线", ed.edit.textCursor().charFormat().fontUnderline())
-            return True
-        if key == Qt.Key_K:
-            self._ensure_body_focus()
-            ed.insert_link()
-            return True
-        if key == Qt.Key_T:
-            self.insert_table()
-            return True
-        if key == Qt.Key_Backslash:
-            self._ensure_body_focus()
-            ed.clear_format()
-            return True
-        if key == Qt.Key_Slash:
-            self.toggle_source_mode()
-            return True
-        if key == Qt.Key_D:
-            self.toggle_star()               # myBase: Ctrl+D 书签/收藏
-            return True
-        if key == Qt.Key_BracketRight:
-            self._ensure_body_focus()
-            ed.edit._indent_block(1)
-            return True
-        if key == Qt.Key_BracketLeft:
-            self._ensure_body_focus()
-            ed.edit._indent_block(-1)
-            return True
-        if key == Qt.Key_S:
-            self.save_now()
-            return True
-        if key == Qt.Key_N:
-            self.new_node(False)      # myBase: 新建同级（后面）
-            return True
-        if key == Qt.Key_O:
-            self.open_library()
-            return True
-        if key == Qt.Key_P:
-            self._focus_search()
-            return True
-        if key == Qt.Key_F:
-            self.show_find(False)
-            return True
-        if key == Qt.Key_H:
-            self.show_find(True)
-            return True
-        if key == Qt.Key_W or key == Qt.Key_Q:
-            self.close_requested.emit()
-            return True
-        return False
 
     # ------------------------------------------------------------ 菜单动作
 
@@ -1648,15 +1638,15 @@ class DatabaseView(QWidget):
             self.tree.setCurrentItem(item)
         nid = item.data(0, ROLE_ID) if item is not None else None
         menu = QMenu(self)
-        menu.addAction("新建子条目\tCtrl+Alt+N", lambda: self.new_node(True))
-        menu.addAction("新建同级（后）\tCtrl+N", lambda: self.new_node(False))
-        menu.addAction("新建同级（前）\tCtrl+Shift+N",
+        menu.addAction(self._mtxt("new_child", "新建子条目"), lambda: self.new_node(True))
+        menu.addAction(self._mtxt("new_sibling_after", "新建同级（后）"), lambda: self.new_node(False))
+        menu.addAction(self._mtxt("new_sibling_before", "新建同级（前）"),
                        lambda: self.new_node(False, before=True))
         if nid is not None:
             menu.addSeparator()
-            menu.addAction("收藏 / 取消收藏\tCtrl+D", self.toggle_star)
-            menu.addAction("上移\tCtrl+Alt+↑", lambda: self.move_item(-1))
-            menu.addAction("下移\tCtrl+Alt+↓", lambda: self.move_item(1))
+            menu.addAction(self._mtxt("toggle_star", "收藏 / 取消收藏"), self.toggle_star)
+            menu.addAction(self._mtxt("move_up", "上移"), lambda: self.move_item(-1))
+            menu.addAction(self._mtxt("move_down", "下移"), lambda: self.move_item(1))
             menu.addSeparator()
             menu.addAction("重命名\tF2", self._rename_current)
             menu.addAction("添加附件…", lambda: self.attachments.pick_files())
@@ -1770,6 +1760,58 @@ class DatabaseView(QWidget):
         self.status_message.emit(
             f"导入完成：{counter['files']} 个文件"
             + ("（已取消）" if counter["cancelled"] else ""), 6000)
+
+    def import_markdown(self) -> None:
+        """导入一个或多个 .md 文件，每个文件成一个条目（正文即文件内容）。"""
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "导入 Markdown 文件", "",
+            "Markdown 文件 (*.md *.markdown *.mdown);;所有文件 (*.*)")
+        if not paths:
+            return
+        if self._current_id is None:
+            parent_id = None
+        else:
+            parent_id = self._current_id if QMessageBox.question(
+                self, "导入位置",
+                f"共 {len(paths)} 个文件。\n\n导入到当前选中的条目下吗？\n"
+                "（选「No」则建在顶层）",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes) == QMessageBox.Yes else None
+
+        progress = QProgressDialog("正在导入…", "取消", 0, len(paths), self)
+        progress.setWindowTitle("导入 Markdown 文件")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(300)
+
+        imported = 0
+        first_id = None
+        for i, p in enumerate(paths):
+            if progress.wasCanceled():
+                break
+            progress.setValue(i)
+            QApplication.processEvents()
+            try:
+                text = Path(p).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                # 尝试 GBK 兜底，再失败就跳过
+                try:
+                    text = Path(p).read_text(encoding="gbk", errors="replace")
+                except OSError:
+                    QMessageBox.warning(self, "导入失败",
+                                        f"无法读取文件：\n{p}\n\n{exc}")
+                    continue
+            title = Path(p).stem
+            nid = self.db.create_node(title, parent_id,
+                                      note_text=text, note_format="md")
+            if first_id is None:
+                first_id = nid
+            imported += 1
+        progress.close()
+
+        if imported:
+            self._reload_tree(select_id=first_id)
+            self._update_counts()
+            self.status_message.emit(f"已导入 {imported} 个 Markdown 文件", 5000)
 
     def export_node(self, node_id: int) -> None:
         row = self.db.get_node(node_id)
