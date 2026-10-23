@@ -28,7 +28,6 @@ from ui.theme import P
 from ui.fonts import UI_FONT_STACK
 
 GZS_SCHEME = "gzs"
-SAVE_DELAY_MS = 700
 
 MONO_STACK = ("Menlo", "Consolas", "Courier New", "monospace")
 
@@ -1326,11 +1325,6 @@ class NoteEditor(QWidget):
         self._dirty = False
         self._node_id: Optional[int] = None
 
-        self._timer = QTimer(self)
-        self._timer.setSingleShot(True)
-        self._timer.setInterval(SAVE_DELAY_MS)
-        self._timer.timeout.connect(self._emit_save)
-
         self._build_ui()
 
     # ------------------------------------------------------------------ UI
@@ -1385,7 +1379,8 @@ class NoteEditor(QWidget):
             self.edit.clear()
 
     def set_node(self, node_id: Optional[int], content: str = "", fmt: str = "md") -> None:
-        self.flush()
+        # 这里不再自动落盘：切条目前的保存/丢弃由 DatabaseView.confirm_unsaved()
+        # 让用户决定，本方法只负责装载新内容。
         self._node_id = node_id
         self._loading = True
         # 换文档期间不追踪：否则旧笔记的图会被当成“被删掉”
@@ -1420,16 +1415,22 @@ class NoteEditor(QWidget):
         self._dirty = False
         self.dirtyChanged.emit(False)
         if changed:
-            self._dirty = True
-            self.dirtyChanged.emit(True)
-            self._timer.start()
+            # 载入时的格式迁移（HTML→MD、主题色重映射、`# 标题` 转真标题）
+            # 属于程序自身的一致性处理，不是用户编辑：立刻静默写回，
+            # 免得一打开旧笔记就挂着「未保存」逼用户确认。
+            self._emit_save()
 
     def flush(self) -> None:
+        """立刻落盘（手动保存 / 用户确认保存时调用）。"""
         if self._dirty:
-            self._timer.stop()
             self._emit_save()
         else:
             self.edit.flush_pending()
+
+    def discard(self) -> None:
+        """丢弃未保存的改动（用户选「不保存」时调用）。"""
+        self._dirty = False
+        self.dirtyChanged.emit(False)
 
     def copy_as_markdown(self) -> None:
         QApplication.clipboard().setText(document_to_markdown(self.edit.document()))
@@ -1459,9 +1460,9 @@ class NoteEditor(QWidget):
         changed = remap_theme_colors(doc)
         self.edit.viewport().update()
         if changed and self._node_id is not None:
-            self._dirty = True
-            self.dirtyChanged.emit(True)
-            self._timer.start()
+            # 换主题只是把颜色改成新主题的色值（内容含义不变），静默写回即可，
+            # 不该在用户没编辑的情况下挂一个「未保存」。
+            self._emit_save()
 
     def is_dirty(self) -> bool:
         return self._dirty
@@ -1472,8 +1473,8 @@ class NoteEditor(QWidget):
         if not self._dirty:
             self._dirty = True
             self.dirtyChanged.emit(True)
-        # 不实时保存：只标记为「未保存」，落盘时机是 Ctrl+S / 切换条目 /
-        # 关闭标签或窗口（都会走 flush → _emit_save）。
+        # 全手动保存：这里只标「未保存」，绝不落盘。
+        # 落盘只发生在 Ctrl+S 或用户在确认框里选「保存」。
 
     def _emit_save(self) -> None:
         if not self._dirty or self._node_id is None:

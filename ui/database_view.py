@@ -181,6 +181,8 @@ class DatabaseView(QWidget):
         self._current_id: Optional[int] = None
         self._loading_tree = False
         self._syncing_item = False
+        self._title_dirty = False      # 标题框改过、尚未保存
+        self._db_closed = False        # closeEvent 只跑一次
 
         # 界面状态存进库本身，不再写注册表
         self.settings = DbState(db)
@@ -189,11 +191,6 @@ class DatabaseView(QWidget):
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(220)
         self._search_timer.timeout.connect(self._run_search)
-
-        self._title_timer = QTimer(self)
-        self._title_timer.setSingleShot(True)
-        self._title_timer.setInterval(400)
-        self._title_timer.timeout.connect(self._commit_title)
 
         app = QApplication.instance()
         if app is not None:
@@ -527,8 +524,7 @@ class DatabaseView(QWidget):
         self.title_edit = QLineEdit(head)
         self.title_edit.setObjectName("TitleEdit")
         self.title_edit.setPlaceholderText("未命名")
-        self.title_edit.textChanged.connect(lambda _t: self._title_timer.start())
-        self.title_edit.editingFinished.connect(self._commit_title)
+        self.title_edit.textChanged.connect(self._on_title_changed)
         row1.addWidget(self.title_edit, 1)
 
         self.path_label = QLabel("", head)
@@ -1432,8 +1428,15 @@ class DatabaseView(QWidget):
         if row is None:
             return
 
+        # 切条目前先把上一条的未保存改动问清楚；用户点「取消」就留在原地
+        if self._current_id is not None and node_id != self._current_id:
+            if not self.confirm_unsaved("切换条目"):
+                self._restore_tree_selection()
+                return
+
         self.editor.set_node(node_id, row["note_text"], row["note_format"])
         self._current_id = node_id
+        self._title_dirty = False
 
         self._syncing_item = True
         self.title_edit.setText(row["title"] or "")
@@ -1469,6 +1472,15 @@ class DatabaseView(QWidget):
         self.path_label.setText(path if " / " in path else "")
         self.path_label.setToolTip(path)
 
+    def _restore_tree_selection(self) -> None:
+        """用户放弃切换时，把左侧树的选中项拨回当前条目。"""
+        item = self._items.get(self._current_id) if self._current_id else None
+        if item is None:
+            return
+        self._loading_tree = True
+        self.tree.setCurrentItem(item)
+        self._loading_tree = False
+
     def _show_empty_state(self) -> None:
         self._current_id = None
         self.editor.set_node(None)
@@ -1477,6 +1489,7 @@ class DatabaseView(QWidget):
         self.title_edit.clear()
         self.path_label.clear()
         self.empty_hint.show()
+        self._title_dirty = False
         self._set_save_state(False)
         self._update_counts()
 
@@ -1547,36 +1560,102 @@ class DatabaseView(QWidget):
 
     # ---------------------------------------------------------------- 保存
 
+    def has_unsaved(self) -> bool:
+        return self.editor.is_dirty() or self._title_dirty
+
     def save_now(self) -> None:
+        """手动保存（Ctrl+S）。正文和标题一起落盘。"""
         if self._current_id is None:
             self.status_message.emit("还没有选中条目", 2500)
             return
-        if not self.editor.is_dirty():
+        if not self.has_unsaved():
             self.status_message.emit("当前条目已是最新", 2500)
             return
+        self._commit_title()
         self.editor.flush()
+        self._set_save_state(False)
         self.status_message.emit("已保存", 2500)
 
-    def _set_save_state(self, dirty: bool) -> None:
-        self.save_state_changed.emit(dirty)
+    def confirm_unsaved(self, action: str = "继续") -> bool:
+        """有未保存改动时问「保存 / 不保存 / 取消」。
+
+        返回 True 表示可以继续（已保存或用户主动丢弃），False 表示取消操作。
+        """
+        if not self.has_unsaved():
+            return True
+
+        name = (self.title_edit.text().strip()
+                or (self.db.title_of(self._current_id) if self._current_id else "")
+                or "当前条目")
+        box = QMessageBox(self)
+        box.setWindowTitle("未保存的更改")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(f"「{name}」有未保存的更改。")
+        box.setInformativeText(f"要先保存再{action}吗？")
+        btn_save = box.addButton("保存", QMessageBox.ButtonRole.AcceptRole)
+        btn_skip = box.addButton("不保存", QMessageBox.ButtonRole.DestructiveRole)
+        btn_cancel = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(btn_save)
+        box.setEscapeButton(btn_cancel)
+        box.exec()
+
+        hit = box.clickedButton()
+        if hit is btn_save:
+            self.save_now()
+            return True
+        if hit is btn_skip:
+            self._discard_changes()
+            return True
+        return False
+
+    def _discard_changes(self) -> None:
+        """丢弃正文与标题的未保存改动，回到库里已存的状态。"""
+        self.editor.discard()
+        self._title_dirty = False
+        if self._current_id is not None:
+            row = self.db.get_node(self._current_id)
+            if row is not None:
+                self._syncing_item = True
+                self.title_edit.setText(row["title"] or "")
+                self._syncing_item = False
+        self._set_save_state(False)
+
+    def _on_title_changed(self, _text: str) -> None:
+        """标题框只标「未保存」，不再自己定时提交。"""
+        if self._syncing_item or self._current_id is None:
+            return
+        row = self.db.get_node(self._current_id)
+        if row is None:
+            return
+        want = self.title_edit.text().strip() or "未命名"
+        dirty = want != (row["title"] or "")
+        if dirty != self._title_dirty:
+            self._title_dirty = dirty
+            self._set_save_state(self._title_dirty)
+
+    def _set_save_state(self, _dirty: bool = False) -> None:
+        self.save_state_changed.emit(self.has_unsaved())
 
     def _save_note(self, fmt: str, content: str, plain: str) -> None:
         if self._current_id is None:
             return
         self.db.update_node(self._current_id, note_text=content,
                             note_format=fmt, plain=plain)
-        self.save_state_changed.emit(False)
+        self.save_state_changed.emit(self.has_unsaved())
         self.status_message.emit(
             "已保存 · " + self.db.get_node(self._current_id)["updated_at"][11:], 2500)
 
     def _commit_title(self) -> None:
-        if self._title_timer.isActive():
-            self._title_timer.stop()
+        """把标题框写回库（只在保存时调用）。"""
         if self._current_id is None or self._syncing_item:
             return
         title = self.title_edit.text().strip() or "未命名"
         row = self.db.get_node(self._current_id)
-        if row is None or row["title"] == title:
+        if row is None:
+            self._title_dirty = False
+            return
+        self._title_dirty = False
+        if row["title"] == title:
             return
         self.db.update_node(self._current_id, title=title)
         item = self._items.get(self._current_id)
@@ -1615,7 +1694,10 @@ class DatabaseView(QWidget):
         kw = self.search_box.text().strip()
         if not kw:
             return
-        self.editor.flush()      # 先落盘，刚写的内容也能被搜到
+        # 不再为搜索而落盘：搜的是库里已保存的内容。
+        # 若当前条目有未保存改动，提示一下，免得用户以为搜漏了。
+        if self.has_unsaved():
+            self.status_message.emit("当前条目有未保存的更改，搜索结果不含这部分内容", 4000)
         results = self.db.search(kw)
         self.search_panel.set_results(results, kw)
         self.side_stack.setCurrentIndex(1)
@@ -1911,7 +1993,8 @@ class DatabaseView(QWidget):
     # ------------------------------------------------------------ 库与备份
 
     def backup(self) -> None:
-        self.editor.flush()
+        if not self.confirm_unsaved("备份"):
+            return
         stamp = datetime.now().strftime("%Y%m%d-%H%M")
         default = self.db.db_path.with_name(f"{self.db.db_path.stem}-备份-{stamp}.db")
         target, _ = QFileDialog.getSaveFileName(
@@ -1929,7 +2012,8 @@ class DatabaseView(QWidget):
             "这个文件可以单独拷走，随时用「打开资料库」恢复。")
 
     def compact_db(self) -> None:
-        self.editor.flush()
+        if not self.confirm_unsaved("精简数据库"):
+            return
         before = self.db.disk_size()
         if QMessageBox.question(
                 self, "精简数据库",
@@ -2081,13 +2165,15 @@ class DatabaseView(QWidget):
         self.editor.edit.setFocus()
 
     def closeEvent(self, event):  # noqa: N802
+        if self._db_closed:
+            super().closeEvent(event)
+            return
+        # 关标签 / 关窗口前先问清楚：有未保存改动就弹「保存 / 不保存 / 取消」
+        if not self.confirm_unsaved("关闭"):
+            event.ignore()
+            return
+        self._db_closed = True
         try:
-            # 标题框的延迟提交要先落地：库随后就关，400ms 内再触发一次会撞上
-            # "Cannot operate on a closed database"
-            if self._title_timer.isActive():
-                self._title_timer.stop()
-                self._commit_title()
-            self.editor.flush()
             if self._current_id is not None:
                 self.db._set_meta("last_node", str(self._current_id))
             self.settings.setValue("splitter", self.splitter.sizes())

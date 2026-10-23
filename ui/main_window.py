@@ -123,6 +123,8 @@ class MainWindow(QMainWindow):
         view.build_menus(mb)
 
     def _refresh_statusbar(self, view: DatabaseView) -> None:
+        if view is None or getattr(view, "_db_closed", False):
+            return
         s = view.db.stats()
         self.lbl_counts.setText(
             f"{s['nodes']} 条目 · {s['files']} 附件 · 库 "
@@ -131,8 +133,8 @@ class MainWindow(QMainWindow):
             f"库文件 · {view.db.db_path.name} · "
             f"{self._human_size(view.db.disk_size())}")
         self.lbl_db.setToolTip(str(view.db.db_path))
-        if view.editor.is_dirty():
-            self.lbl_saved.setText("有未保存的更改")
+        if view.has_unsaved():
+            self.lbl_saved.setText("有未保存的更改 · Ctrl+S 保存")
             self.lbl_saved.setStyleSheet("color:#b45309;")
         else:
             self.lbl_saved.setText("")
@@ -141,7 +143,7 @@ class MainWindow(QMainWindow):
         self._update_title(view)
 
     def _update_title(self, view: DatabaseView) -> None:
-        mark = " · 未保存" if view.editor.is_dirty() else ""
+        mark = " · 未保存" if view.has_unsaved() else ""
         self.setWindowTitle(f"{view.db.db_path.name} · 归藏{mark}")
 
     def _on_title_changed(self, _text: str) -> None:
@@ -181,10 +183,14 @@ class MainWindow(QMainWindow):
             # 至少保留一个标签；关闭最后一个等同退出
             self.close()
             return
+        if not view.confirm_unsaved("关闭"):
+            return
         idx = self._views.index(view)
-        view.close()
-        self.tabs.removeTab(idx)
+        # 先把视图从列表和标签栏摘掉，再关库：removeTab 会触发 currentChanged，
+        # 那时若列表里还留着已关库的视图，状态栏就会去查一个关掉的数据库。
         self._views.pop(idx)
+        self.tabs.removeTab(idx)
+        view.close()
 
     # ------------------------------------------------------------ 状态栏回调
 
@@ -225,9 +231,21 @@ class MainWindow(QMainWindow):
             self.showFullScreen()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        # 先逐个标签问「是否保存」，都确认了再真正关闭；
+        # 任何一个点了取消，整个窗口就不关（此时还没有库被关掉）
+        for v in self._views:
+            try:
+                if not v.confirm_unsaved("关闭"):
+                    event.ignore()
+                    return
+            except Exception:  # noqa: BLE001
+                pass
         view = self._current_view() or (self._views[0] if self._views else None)
         state = DbState(view.db) if view is not None else self.settings
-        state.setValue("geometry", self.saveGeometry())
+        try:
+            state.setValue("geometry", self.saveGeometry())
+        except Exception:  # noqa: BLE001
+            pass
         for v in self._views:
             try:
                 v.close()
