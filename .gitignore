@@ -2,9 +2,13 @@
 dist/
 dist_v2/
 dist_v3/
-build/
+build/*
 build_pyi/
 *.spec.bak
+
+# 图标虽在 build/ 下，但需入库供 CI 直接用（避免 CI 上 Qt 无头渲染失败）
+!build/icon.ico
+!build/icon.icns
 
 # Python
 __pycache__/
@@ -20,10 +24,6 @@ venv/
 _smoke*.db
 .tmpdb/
 .t*.db
-
-# 图标中间产物（.ico/.icns 由 make_icon.py 生成）
-build/*.ico
-build/*.icns
 
 # 系统
 .DS_Store
