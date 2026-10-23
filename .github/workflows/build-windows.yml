@@ -6,6 +6,9 @@ on:
     tags:
       - 'v*'                   # 打 tag 时自动触发
 
+permissions:
+  contents: write              # 允许 softprops/action-gh-release 创建/更新 Release
+
 jobs:
   build-windows:
     runs-on: windows-latest

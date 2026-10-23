@@ -6,6 +6,9 @@ on:
     tags:
       - 'v*'                   # 打 tag 时自动触发
 
+permissions:
+  contents: write              # 允许 softprops/action-gh-release 创建/更新 Release
+
 jobs:
   build-macos:
     strategy:
@@ -89,3 +92,12 @@ jobs:
           name: GuiZang-${{ matrix.arch }}-dmg
           path: dist/*.dmg
           if-no-files-found: error
+
+      - name: Publish to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.dmg
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
