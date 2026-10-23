@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPen, QTextCursor
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen, QTextCursor
 from PySide6.QtWidgets import (QApplication, QFrame, QLabel, QTextEdit,
                                QVBoxLayout, QWidget)
 
@@ -24,16 +24,28 @@ _HOVER_DELAY = 120     # 悬停多久后弹出预览（毫秒），太快划过�
 _LIST_MAX = 42         # 预览列表最多显示多少行（超出按当前项开窗）
 
 class _PreviewCard(QFrame):
-    """悬停刻度时在导航条左侧弹出的**整列标题列表**（当前行加粗高亮）。"""
+    """悬停刻度时在导航条左侧弹出的**整列标题列表**（当前行加粗高亮）。
+
+    卡片尺寸完全由内容决定：标题少、字短就小，标题多、层级深才变大。
+    行字号按标题级别递减（H1 最大 → H6 最小），越深的级别左侧缩进越多，
+    读起来就是一页小小的目录。
+    """
+
+    _LEVEL_PX = {1: 14, 2: 13, 3: 12, 4: 11, 5: 11, 6: 10}
+    _INDENT = 7          # 每深一级缩进的像素
+    _INDENT_MAX = 3      # 最多缩进几级（再深就不缩了，免得挤掉文字）
+    _PAD = (4, 4, 6, 4)  # 卡片内边距 左 上 右 下
+    _W_MIN = 120
+    _W_MAX = 340
 
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.ToolTip
                          | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setObjectName("NavPreview")
-        self.setFixedWidth(360)
+        self.setMinimumWidth(self._W_MIN)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(6, 8, 8, 8)
+        lay.setContentsMargins(*self._PAD)
         lay.setSpacing(0)
 
         self._list = QLabel(self)
@@ -46,61 +58,122 @@ class _PreviewCard(QFrame):
     def _apply_style(self) -> None:
         self.setStyleSheet(
             f"QFrame#NavPreview {{ background:{P['panel']};"
-            f" border:1px solid {P['border']}; border-radius:10px; }}"
+            f" border:1px solid {P['border']}; border-radius:8px; }}"
             f"QFrame#NavPreview QLabel {{ background:transparent; border:none; }}")
+
+    # ------------------------------------------------------------ 度量
+
+    def _font(self, px: int) -> QFont:
+        f = QFont(self._list.font())
+        f.setPixelSize(px)
+        f.setBold(False)
+        return f
+
+    def _row_h(self, level: int) -> int:
+        """单行高度（含 HTML 表格自带的行距，略偏保守以免裁掉末行）。"""
+        return QFontMetrics(self._font(self._LEVEL_PX.get(level, 11))).height() + 3
+
+    def _text_w(self, px: int, text: str) -> int:
+        return QFontMetrics(self._font(px)).horizontalAdvance(text)
+
+    def _elide(self, px: int, text: str, width: int) -> str:
+        """按像素宽度截断（中文按字宽变化，不能按字数算）。"""
+        fm = QFontMetrics(self._font(px))
+        if fm.horizontalAdvance(text) <= width:
+            return text
+        ell = "…"
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if fm.horizontalAdvance(text[:mid] + ell) <= width:
+                lo = mid
+            else:
+                hi = mid - 1
+        return text[:lo] + ell if lo > 0 else ell
+
+    def _pick_window(self, levels: List[int], active: int, max_h: int):
+        """以当前标题为中心向两侧生长，按真实行高凑满可用高度。"""
+        total = len(levels)
+        heights = [self._row_h(lv) for lv in levels]
+        budget = max(72, max_h - self._PAD[1] - self._PAD[3] - 28)
+
+        start, end = active, active + 1
+        used = heights[active]
+        while (start > 0 or end < total) and (end - start) < _LIST_MAX:
+            grown = False
+            if end < total and used + heights[end] <= budget:
+                used += heights[end]
+                end += 1
+                grown = True
+            if (end - start) < _LIST_MAX and start > 0 and used + heights[start - 1] <= budget:
+                used += heights[start - 1]
+                start -= 1
+                grown = True
+            if not grown:
+                break
+        return start, end
+
+    # ------------------------------------------------------------ 渲染
 
     def show_list(self, headings: List[Tuple[int, int, str]], active: int,
                   anchor: QPoint, max_h: int = 780) -> None:
-        """渲染整列标题；行距紧凑，无空隙。当前项加粗、横线加粗。"""
         import html as _html
 
         screen = QApplication.screenAt(anchor) or QApplication.primaryScreen()
         if screen is not None:
             max_h = min(max_h, int(screen.availableGeometry().height() * 0.85))
-        # 每行约 19px，按屏幕高度决定最多显示多少行
-        row_limit = max(8, min(_LIST_MAX, (max_h - 26) // 19))
 
         total = len(headings)
-        start = 0
-        end = total
-        if total > row_limit:
-            start = max(0, active - row_limit // 2)
-            end = min(total, start + row_limit)
-            start = max(0, end - row_limit)
+        levels = [h[0] for h in headings]
+        start, end = self._pick_window(levels, active, max_h)
 
         rows: List[str] = []
-        rows.append("<table width='100%' cellspacing='0' cellpadding='0'>")
+        want_w = 0
+        text_max = self._W_MAX - self._PAD[0] - self._PAD[2] - 18
+        rows.append("<table cellspacing='0' cellpadding='0'>")
         if start > 0:
+            tip = f"… 上方还有 {start} 个标题"
             rows.append(
-                f"<tr><td align='right' style='padding:1px 4px 1px 0;"
-                f"color:{P['muted']};font-size:10px;'>… 上方还有 {start} 个标题</td>"
-                f"<td style='color:{P['border']};'> </td></tr>")
-        name_max = 26
+                f"<tr><td align='right' style='padding:0 3px 0 0;"
+                f"color:{P['muted']};font-size:10px;'>{tip}</td></tr>")
+            want_w = max(want_w, self._text_w(10, tip))
         for i in range(start, end):
-            _lv, _bno, title = headings[i]
+            lv, _bno, title = headings[i]
+            px = self._LEVEL_PX.get(lv, 11)
+            lvl = max(0, min(lv, self._INDENT_MAX) - 1)
+            indent = lvl * self._INDENT
             name = (title or "").strip() or "（空标题）"
-            if len(name) > name_max:
-                name = name[:name_max] + "…"
+            name = self._elide(px, name, text_max - indent)
+            want_w = max(want_w, self._text_w(px, name) + self._text_w(px, " —") + indent)
             name = _html.escape(name)
             if i == active:
                 rows.append(
-                    f"<tr><td align='right' style='padding:1px 5px 1px 0;"
-                    f"color:{P['text']};font-size:12px;font-weight:700;'>{name}</td>"
-                    f"<td width='10' style='color:{P['text']};font-size:12px;"
-                    f"font-weight:700;'>—</td></tr>")
+                    f"<tr><td align='right' style='padding:0 3px 0 {indent}px;"
+                    f"color:{P['text']};font-size:{px}px;font-weight:700;'>"
+                    f"{name} —</td></tr>")
             else:
                 rows.append(
-                    f"<tr><td align='right' style='padding:1px 5px 1px 0;"
-                    f"color:{P['muted']};font-size:12px;'>{name}</td>"
-                    f"<td width='10' style='color:{P['border']};font-size:12px;'>—</td></tr>")
+                    f"<tr><td align='right' style='padding:0 3px 0 {indent}px;"
+                    f"color:{P['muted']};font-size:{px}px;'>{name}"
+                    f"<span style='color:{P['border']};'> —</span></td></tr>")
         if end < total:
+            tip = f"… 下方还有 {total - end} 个标题"
             rows.append(
-                f"<tr><td align='right' style='padding:1px 4px 1px 0;"
-                f"color:{P['muted']};font-size:10px;'>… 下方还有 {total - end} 个标题</td>"
-                f"<td style='color:{P['border']};'> </td></tr>")
+                f"<tr><td align='right' style='padding:0 3px 0 0;"
+                f"color:{P['muted']};font-size:10px;'>{tip}</td></tr>")
+            want_w = max(want_w, self._text_w(10, tip))
         rows.append("</table>")
         self._list.setText("".join(rows))
+
+        # 宽度贴合最长一行（含内边距），高度由 adjustSize 按内容算
+        w = want_w + self._PAD[0] + self._PAD[2] + 4
+        self.setFixedWidth(max(self._W_MIN, min(self._W_MAX, w)))
         self.adjustSize()
+        if self.height() > max_h:               # 极端字号下再兜一层
+            self.setFixedHeight(max_h)
+        else:
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)
 
         # 贴在导航条左侧，垂直对齐鼠标；超出屏幕就夹回来
         x = anchor.x() - self.width() - 8
