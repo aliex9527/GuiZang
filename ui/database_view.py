@@ -1221,6 +1221,7 @@ class DatabaseView(QWidget):
         if app is not None:
             app.setStyleSheet(style.qss())
         self.editor.refresh_theme()
+        self.editor.doc_nav.refresh_theme()
         self._apply_icon_theme()
         self.attachments.refresh()
         self.search_panel.list.viewport().update()
