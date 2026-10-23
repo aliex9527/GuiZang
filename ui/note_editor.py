@@ -225,7 +225,20 @@ class MarkdownEdit(QTextEdit):
         if block.length() > 1:
             return
         bf = block.blockFormat()
-        if (int(bf.headingLevel()) or block.textList() is not None
+        level = int(bf.headingLevel())
+        if level:
+            # 标题块：基准格式必须也是标题字号。历史上这里直接 return，
+            # 于是「块是标题、打的字是正文」的坏状态会一直留着 —— 顺手修掉。
+            want = HEADING_SIZES.get(level, 11.0)
+            cf = block.charFormat()
+            size = cf.fontPointSize()
+            if size <= 0 or abs(size - want) > 0.05 or cf.fontWeight() <= QFont.Normal:
+                fmt = self._heading_format(level)
+                cur = self.textCursor()
+                cur.setBlockCharFormat(fmt)
+                self.setCurrentCharFormat(fmt)
+            return
+        if (block.textList() is not None
                 or bf.leftMargin() >= 18
                 or bf.background().color().name().lower() in (P["code_bg"], P["quote_bg"])):
             return
@@ -1459,7 +1472,8 @@ class NoteEditor(QWidget):
         if not self._dirty:
             self._dirty = True
             self.dirtyChanged.emit(True)
-        self._timer.start()
+        # 不实时保存：只标记为「未保存」，落盘时机是 Ctrl+S / 切换条目 /
+        # 关闭标签或窗口（都会走 flush → _emit_save）。
 
     def _emit_save(self) -> None:
         if not self._dirty or self._node_id is None:
@@ -1701,7 +1715,32 @@ class NoteEditor(QWidget):
         fmt.setForeground(HEADING6_COLOR if level == 6 else QColor(P["note_text"]))
         fmt.setFontFamilies(list(UI_FONT_STACK))
         self._apply_format(fmt, whole_block=True)
+        self._anchor_block_format(level, fmt)
         return level
+
+    def _anchor_block_format(self, level: int, fmt: QTextCharFormat) -> None:
+        """把段落基准字符格式（含段落符号）定成标题格式。
+
+        只 mergeCurrentCharFormat 是不够的：光标高度、空行上的后续输入都以
+        段落基准格式为准，空行设标题时尤其明显（状态栏说标题 1，打的字还是
+        正文大小）。这里显式写 blockCharFormat，光标和之后打的字一起跟进。
+        """
+        cur = self.edit.textCursor()
+        block = cur.block()
+        if not block.isValid():
+            return
+        if level:
+            fmt = QTextCharFormat(fmt)
+        else:
+            fmt = QTextCharFormat()
+            fmt.setFontPointSize(11.0)
+            fmt.setFontWeight(QFont.Normal)
+            fmt.setFontItalic(False)
+            fmt.setForeground(QColor(P["note_text"]))
+            fmt.setFontFamilies(list(UI_FONT_STACK))
+        bc = QTextCursor(block)
+        bc.setBlockCharFormat(fmt)
+        self.edit.mergeCurrentCharFormat(fmt)   # 光标高度 + 后续输入
 
     def toggle_list(self, style) -> None:
         cur = self.edit.textCursor()

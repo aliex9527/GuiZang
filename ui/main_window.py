@@ -141,7 +141,8 @@ class MainWindow(QMainWindow):
         self._update_title(view)
 
     def _update_title(self, view: DatabaseView) -> None:
-        self.setWindowTitle(f"{view.db.db_path.name} · 归藏")
+        mark = " · 未保存" if view.editor.is_dirty() else ""
+        self.setWindowTitle(f"{view.db.db_path.name} · 归藏{mark}")
 
     def _on_title_changed(self, _text: str) -> None:
         view = self.sender()
@@ -194,11 +195,12 @@ class MainWindow(QMainWindow):
         if self.sender() is not self._current_view():
             return
         if dirty:
-            self.lbl_saved.setText("有未保存的更改")
+            self.lbl_saved.setText("有未保存的更改 · Ctrl+S 保存")
             self.lbl_saved.setStyleSheet("color:#b45309;")
         else:
             self.lbl_saved.setText("")
             self.lbl_saved.setStyleSheet("")
+        self._update_title(self._current_view())
 
     def _on_mode_changed(self, text: str) -> None:
         if self.sender() is not self._current_view():

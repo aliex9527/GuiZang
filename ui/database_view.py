@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -200,6 +201,9 @@ class DatabaseView(QWidget):
 
         self._image_size_cache: dict = {}
         self._shortcut_cache: Optional[dict] = None  # 已解析的自定义快捷键
+        # 同一次按键可能被 QShortcut 和 KeyPress 兜底各触发一次，
+        # 记录 (动作, 时间) 只认第一次；不同动作互不影响（连按 Ctrl+Z 照常）
+        self._last_action: tuple = ("", 0.0)
         self._key_handlers = self._make_key_handlers()
         self._build_ui()
         self._build_shortcuts()
@@ -741,13 +745,34 @@ class DatabaseView(QWidget):
             sc.activated.connect(lambda a=aid: self._dispatch_action(a))
             self._bound_shortcuts.append(sc)
 
+    @staticmethod
+    def _kn(e) -> int:
+        """把 PySide6 的枚举/标志转成 int（6.12 起 int(KeyboardModifier) 会抛 TypeError）。"""
+        if e is None:
+            return 0
+        val = getattr(e, "value", e)
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return 0
+
+    def _claim(self, aid: str) -> bool:
+        """同一次按键只执行一次动作：50ms 内同一个动作的第二次调用直接丢弃。"""
+        last_aid, last_t = self._last_action
+        now = time.monotonic()
+        if last_aid == aid and (now - last_t) < 0.05:
+            self._last_action = (aid, now)
+            return False
+        self._last_action = (aid, now)
+        return True
+
     def _dispatch_key(self, event) -> bool:
         """KeyPress 兜底通道：把按键事件按当前键表裁决一次。"""
-        key, mods = event.key(), int(event.modifiers())
+        key, mods = event.key(), self._kn(event.modifiers())
         if key in (Qt.Key_unknown, Qt.Key_Shift, Qt.Key_Control,
                    Qt.Key_Alt, Qt.Key_Meta):
             return False
-        seq = QKeySequence(mods | int(key))
+        seq = QKeySequence(mods | self._kn(key))
         if seq.count() == 0:
             return False
         aid = self._key_to_action.get(seq.toString(QKeySequence.NativeText))
@@ -755,6 +780,8 @@ class DatabaseView(QWidget):
             return False
         if not self.isVisible() or QApplication.activeModalWidget() is not None:
             return False
+        if not self._claim(aid):
+            return True                      # 已被 QShortcut 处理过，吃掉这次事件
         handler = self._key_handlers.get(aid)
         if handler is not None:
             handler()
@@ -767,6 +794,8 @@ class DatabaseView(QWidget):
             return                       # 多标签库里只有当前视图该响应
         if QApplication.activeModalWidget() is not None:
             return
+        if not self._claim(aid):
+            return                       # KeyPress 兜底通道已处理过这次按键
         handler = self._key_handlers.get(aid)
         if handler is not None:
             handler()
@@ -2053,9 +2082,11 @@ class DatabaseView(QWidget):
 
     def closeEvent(self, event):  # noqa: N802
         try:
-            # 标题框的延迟提交和自动保存定时器都要先停：库随后就关了，
-            # 400ms 内再触发一次会撞上 "Cannot operate on a closed database"
-            self._title_timer.stop()
+            # 标题框的延迟提交要先落地：库随后就关，400ms 内再触发一次会撞上
+            # "Cannot operate on a closed database"
+            if self._title_timer.isActive():
+                self._title_timer.stop()
+                self._commit_title()
             self.editor.flush()
             if self._current_id is not None:
                 self.db._set_meta("last_node", str(self._current_id))
