@@ -18,65 +18,93 @@ from ui.theme import P
 
 _BAR_W = 26            # 整条宽度
 _TICK_TOP = 14         # 上下留白
-_MIN_GAP = 5           # 刻度最小间距（挤不下时自动压缩并等比抽样）
+_TICK_GAP = 12         # 刻度固定间距（标题少时也紧凑排列，不拉伸出空隙）
+_MIN_GAP = 4           # 标题太多挤不下时的最小间距
 _HOVER_DELAY = 120     # 悬停多久后弹出预览（毫秒），太快划过不闪
-
-_LEVEL_NAMES = {1: "一级标题", 2: "二级标题", 3: "三级标题",
-                4: "四级标题", 5: "五级标题", 6: "六级标题"}
-
+_LIST_MAX = 42         # 预览列表最多显示多少行（超出按当前项开窗）
 
 class _PreviewCard(QFrame):
-    """悬停刻度时在导航条左侧弹出的详情卡片。"""
+    """悬停刻度时在导航条左侧弹出的**整列标题列表**（当前行加粗高亮）。"""
 
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.ToolTip
                          | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setObjectName("NavPreview")
-        self.setFixedWidth(330)
+        self.setFixedWidth(360)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(13, 10, 13, 12)
-        lay.setSpacing(6)
+        lay.setContentsMargins(6, 8, 8, 8)
+        lay.setSpacing(0)
 
-        self._badge = QLabel(self)
-        self._title = QLabel(self)
-        self._title.setWordWrap(True)
-        self._body = QLabel(self)
-        self._body.setWordWrap(True)
-        self._meta = QLabel(self)
-        lay.addWidget(self._badge)
-        lay.addWidget(self._title)
-        lay.addWidget(self._body)
-        lay.addWidget(self._meta)
+        self._list = QLabel(self)
+        self._list.setAlignment(Qt.AlignmentFlag.AlignRight
+                                | Qt.AlignmentFlag.AlignVCenter)
+        self._list.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(self._list)
         self._apply_style()
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
             f"QFrame#NavPreview {{ background:{P['panel']};"
-            f" border:1px solid {P['border']}; border-radius:8px; }}"
+            f" border:1px solid {P['border']}; border-radius:10px; }}"
             f"QFrame#NavPreview QLabel {{ background:transparent; border:none; }}")
-        self._badge.setStyleSheet(
-            f"color:{P['accent']}; font-size:11px; font-weight:600;")
-        self._title.setStyleSheet(
-            f"color:{P['text']}; font-size:13px; font-weight:600;")
-        self._body.setStyleSheet(
-            f"color:{P['text']}; font-size:11px;")
-        self._meta.setStyleSheet(
-            f"color:{P['muted']}; font-size:10px;")
 
-    def show_for(self, level: int, title: str, snippet: str,
-                 meta: str, anchor: QPoint) -> None:
-        self._badge.setText(f"H{level} · {_LEVEL_NAMES.get(level, '标题')}")
-        self._title.setText(title.strip() or "（空标题）")
-        self._body.setText(snippet or "（此标题下暂无正文）")
-        self._body.setVisible(True)
-        self._meta.setText(meta)
+    def show_list(self, headings: List[Tuple[int, int, str]], active: int,
+                  anchor: QPoint, max_h: int = 780) -> None:
+        """渲染整列标题；行距紧凑，无空隙。当前项加粗、横线加粗。"""
+        import html as _html
+
+        screen = QApplication.screenAt(anchor) or QApplication.primaryScreen()
+        if screen is not None:
+            max_h = min(max_h, int(screen.availableGeometry().height() * 0.85))
+        # 每行约 19px，按屏幕高度决定最多显示多少行
+        row_limit = max(8, min(_LIST_MAX, (max_h - 26) // 19))
+
+        total = len(headings)
+        start = 0
+        end = total
+        if total > row_limit:
+            start = max(0, active - row_limit // 2)
+            end = min(total, start + row_limit)
+            start = max(0, end - row_limit)
+
+        rows: List[str] = []
+        rows.append("<table width='100%' cellspacing='0' cellpadding='0'>")
+        if start > 0:
+            rows.append(
+                f"<tr><td align='right' style='padding:1px 4px 1px 0;"
+                f"color:{P['muted']};font-size:10px;'>… 上方还有 {start} 个标题</td>"
+                f"<td style='color:{P['border']};'> </td></tr>")
+        name_max = 26
+        for i in range(start, end):
+            _lv, _bno, title = headings[i]
+            name = (title or "").strip() or "（空标题）"
+            if len(name) > name_max:
+                name = name[:name_max] + "…"
+            name = _html.escape(name)
+            if i == active:
+                rows.append(
+                    f"<tr><td align='right' style='padding:1px 5px 1px 0;"
+                    f"color:{P['text']};font-size:12px;font-weight:700;'>{name}</td>"
+                    f"<td width='10' style='color:{P['text']};font-size:12px;"
+                    f"font-weight:700;'>—</td></tr>")
+            else:
+                rows.append(
+                    f"<tr><td align='right' style='padding:1px 5px 1px 0;"
+                    f"color:{P['muted']};font-size:12px;'>{name}</td>"
+                    f"<td width='10' style='color:{P['border']};font-size:12px;'>—</td></tr>")
+        if end < total:
+            rows.append(
+                f"<tr><td align='right' style='padding:1px 4px 1px 0;"
+                f"color:{P['muted']};font-size:10px;'>… 下方还有 {total - end} 个标题</td>"
+                f"<td style='color:{P['border']};'> </td></tr>")
+        rows.append("</table>")
+        self._list.setText("".join(rows))
         self.adjustSize()
 
         # 贴在导航条左侧，垂直对齐鼠标；超出屏幕就夹回来
-        x = anchor.x() - self.width() - 10
+        x = anchor.x() - self.width() - 8
         y = anchor.y() - self.height() // 2
-        screen = QApplication.screenAt(anchor) or QApplication.primaryScreen()
         if screen is not None:
             geo = screen.availableGeometry()
             x = max(geo.left() + 6, min(x, geo.right() - self.width() - 6))
@@ -149,15 +177,23 @@ class DocNav(QWidget):
     # ------------------------------------------------------------ 几何
 
     def _ticks(self) -> List[Tuple[int, int]]:
-        """返回 [(y 坐标, 索引)]。刻度等距均分，数量多时自动压缩。"""
+        """返回 [(y 坐标, 索引)]。
+
+        刻度按**固定间距**紧凑排列（标题少时不铺满整条、不留大空隙），
+        整体在竖条里垂直居中；标题多到挤不下时才等比压缩间距。
+        """
         n = len(self._headings)
         if n == 0:
             return []
         h = self.height() - 2 * _TICK_TOP
         if n == 1:
-            return [(_TICK_TOP, 0)]
-        gap = h / (n - 1)
-        return [(int(_TICK_TOP + i * gap), i) for i in range(n)]
+            return [(self.height() // 2, 0)]
+        gap = float(_TICK_GAP)
+        if (n - 1) * gap > h:
+            gap = max(float(_MIN_GAP), h / (n - 1))
+        total = (n - 1) * gap
+        start = _TICK_TOP + max(0.0, (h - total) / 2)
+        return [(int(start + i * gap), i) for i in range(n)]
 
     def _index_at(self, y: int) -> int:
         ticks = self._ticks()
@@ -213,48 +249,23 @@ class DocNav(QWidget):
                 p.drawLine(x1, y, x2, y)
         p.end()
 
-    def _section_info(self, idx: int, max_lines: int = 3,
-                      max_chars: int = 200) -> Tuple[str, str]:
-        """取某标题下的正文摘要与统计：返回 (摘要, "本节 N 段 · 约 M 字")。"""
-        ed = self._edit
-        if ed is None or not (0 <= idx < len(self._headings)):
-            return "", ""
-        doc = ed.document()
-        block = doc.findBlockByNumber(self._headings[idx][1]).next()
-        lines: List[str] = []
-        chars = 0
-        paras = 0
-        while block.isValid():
-            if int(block.blockFormat().headingLevel()) > 0:
-                break                        # 到下一个标题为止
-            text = block.text().strip()
-            if text:
-                paras += 1
-                chars += len(text)
-                if len(lines) < max_lines and sum(map(len, lines)) < max_chars:
-                    lines.append(text)
-            block = block.next()
-        snippet = " ".join(lines)
-        if len(snippet) > max_chars:
-            snippet = snippet[:max_chars] + "…"
-        if chars > 1200:
-            size = f"约 {chars / 1000:.1f}k 字"
-        else:
-            size = f"约 {chars} 字"
-        return snippet, f"本节 {paras} 段 · {size}"
-
     def _show_preview(self) -> None:
         idx = self._hover
-        if self._edit is None or not (0 <= idx < len(self._headings)):
+        if self._edit is None or not self._headings or not (0 <= idx < len(self._headings)):
             return
-        level, _bno, title = self._headings[idx]
-        snippet, meta = self._section_info(idx)
         anchor = self.mapToGlobal(QPoint(0, self._ticks()[idx][0]))
-        self._card.show_for(level, title, snippet, meta, anchor)
+        budget = self.height() - 8            # 不超出编辑器可视高度
+        if self._edit is not None and self._edit.height() > 0:
+            budget = min(budget, self._edit.height() - 8)
+        self._card.show_list(self._headings, idx, anchor,
+                             max_h=max(260, budget))
 
     def _hide_preview(self) -> None:
         self._show_timer.stop()
-        self._card.hide()
+        try:
+            self._card.hide()
+        except RuntimeError:          # 退出时 C++ 对象已销毁
+            pass
 
     def refresh_theme(self) -> None:
         """主题切换后重刷预览卡片配色。"""
@@ -286,10 +297,12 @@ class DocNav(QWidget):
         if idx != self._hover:
             self._hover = idx
             self.update()
-            if idx >= 0:
-                self._show_timer.start()     # 延迟弹出，快速划过不闪
-            else:
+            if idx < 0:
                 self._hide_preview()
+            elif self._card.isVisible():
+                self._show_preview()     # 列表已展开：跟着滑动即时切换高亮行
+            else:
+                self._show_timer.start() # 首次悬停：延迟弹出，快速划过不闪
         self.setCursor(Qt.CursorShape.PointingHandCursor
                        if idx >= 0 else Qt.CursorShape.ArrowCursor)
 
