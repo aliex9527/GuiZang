@@ -18,8 +18,8 @@ from PySide6.QtCore import QByteArray, QBuffer, QIODevice, Qt, QTimer, QUrl, Sig
 from PySide6.QtGui import (QBrush, QColor, QFont, QImage, QPalette,
                            QTextBlockFormat, QTextCharFormat, QTextCursor, QTextDocument,
                            QTextFormat, QTextImageFormat, QTextListFormat, QTextTableFormat)
-from PySide6.QtWidgets import (QApplication, QFileDialog, QInputDialog, QMenu, QTextEdit,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QInputDialog,
+                               QMenu, QTextEdit, QVBoxLayout, QWidget)
 
 from ui.markdown_render import md_to_html, preview_css
 from ui.md_source import (HIGHLIGHT_BG, MANUAL_WIDTH_PROP, document_to_markdown,
@@ -1327,6 +1327,10 @@ class NoteEditor(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+
         self.edit = MarkdownEdit(self)
         self.edit.image_sink = self._image_saver
         self.edit.image_loader = self._resolver
@@ -1336,7 +1340,15 @@ class NoteEditor(QWidget):
         doc.setDefaultFont(QFont(UI_FONT_STACK[0], 11))
         self.edit.setDocument(doc)
         self.edit.textChanged.connect(self._on_changed)
-        root.addWidget(self.edit, 1)
+        body.addWidget(self.edit, 1)
+
+        # 右侧标题导航条：每个标题一条刻度，点击跳转，随滚动指示当前位置
+        from ui.doc_nav import DocNav
+        self.doc_nav = DocNav(self)
+        self.doc_nav.attach(self.edit)
+        body.addWidget(self.doc_nav)
+
+        root.addLayout(body, 1)
 
         self._set_enabled(False)
 
