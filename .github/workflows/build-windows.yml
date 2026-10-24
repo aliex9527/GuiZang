@@ -25,10 +25,11 @@ jobs:
         id: ver
         shell: bash
         run: |
+          # 唯一来源是仓库根的 VERSION；打 tag 时以 tag 为准
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             V="${GITHUB_REF_NAME#v}"
           else
-            V="1.0.3"
+            V="$(tr -d '[:space:]' < VERSION)"
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "本次构建版本：$V"
@@ -54,7 +55,7 @@ jobs:
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
-          name: GuiZang-windows-x64
+          name: GuiZang-${{ steps.ver.outputs.version }}-windows-x64
           path: dist/*.exe
           if-no-files-found: error
 

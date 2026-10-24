@@ -7,10 +7,10 @@ cd "$(dirname "$0")"
 
 PY=python3
 APP_NAME="GuiZang"
-# 版本号优先取当前 tag（v1.0.3 → 1.0.3），取不到再用默认值；
+# 版本号优先级：GZ_VERSION 环境变量 > 仓库根 VERSION 文件
 # 可以用 GZ_VERSION=1.2.3 ./build_mac.sh 覆盖
-VERSION="${GZ_VERSION:-$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')}"
-VERSION="${VERSION:-1.0.3}"
+VERSION="${GZ_VERSION:-$(cat VERSION 2>/dev/null | tr -d '[:space:]')}"
+VERSION="${VERSION:-0.0.0}"
 export GZ_VERSION="$VERSION"
 
 echo "==> 检查 Python 版本"

@@ -5,8 +5,21 @@ import os
 
 from PyInstaller.utils.hooks import collect_submodules
 
-# 版本号由构建环境注入（CI 从 tag 派生），这样 app 内的版本和 dmg 文件名不会再对不上
-APP_VERSION = os.environ.get('GZ_VERSION', '1.0.3')
+# 版本号唯一来源是仓库根的 VERSION（CI 打 tag 时用 GZ_VERSION 覆盖），
+# 这样 app 内版本、dmg 文件名、Windows 版三者永远一致。
+def _repo_version() -> str:
+    try:
+        base = SPECPATH
+    except NameError:
+        base = os.path.dirname(os.path.abspath(__file__))
+    try:
+        with open(os.path.join(base, 'VERSION'), encoding='utf-8') as f:
+            return f.read().strip() or '0.0.0'
+    except OSError:
+        return '0.0.0'
+
+
+APP_VERSION = os.environ.get('GZ_VERSION') or _repo_version()
 
 hiddenimports = ['markdown.extensions.extra', 'markdown.extensions.sane_lists',
                  'markdown.extensions.nl2br', 'markdown.extensions.admonition',
@@ -19,7 +32,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('ui/assets', 'ui/assets')],
+    datas=[('ui/assets', 'ui/assets'), ('VERSION', '.')],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

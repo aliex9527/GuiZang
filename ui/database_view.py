@@ -1282,9 +1282,13 @@ class DatabaseView(QWidget):
         dlg.exec()
 
     def _about(self) -> None:
+        from core.version import app_version
+        plat = ("Windows" if sys.platform.startswith("win")
+                else "macOS" if sys.platform == "darwin" else "Linux")
         QMessageBox.about(
             self, "关于 归藏",
-            "<b>归藏</b> · 个人资料库<br><br>"
+            "<b>归藏</b> · 个人资料库"
+            f"<br><span style='color:#6b7280;'>版本 {app_version()}（{plat}）</span><br><br>"
             "把任意格式的资料按树形分类收在一起，<br>"
             "整个库就是一个 .db 文件。<br><br>"
             "Python · PySide6 · SQLite<br>"
