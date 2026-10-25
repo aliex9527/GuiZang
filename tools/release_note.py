@@ -94,20 +94,50 @@ def prev_version(version: str) -> Optional[Tuple[str, Optional[str]]]:
 
 
 def commits_between(since: Optional[str], until: str = "HEAD",
-                    limit: int = 40) -> List[Tuple[str, str]]:
-    """取 (短 sha, 标题) 列表；since 为空时表示「一直到 until 为止的历史」。"""
+                    limit: int = 40) -> List[Tuple[str, str, str]]:
+    """取 (短 sha, 标题, 正文) 列表；since 为空时表示「一直到 until 为止的历史」。"""
     if since:
         rng = [f"{since}..{until}"]
     else:
         # 没有起点（第一个版本）：以 until 为终点往回取
         rng = ([until] if until and until != "HEAD" else []) + [f"-{limit}"]
-    raw = git("log", "--no-merges", "--pretty=format:%h%x1f%s", *rng)
+    raw = git("log", "--no-merges", "--pretty=format:%h%x1f%s%x1f%b%x1e", *rng)
     out = []
-    for line in raw.splitlines():
-        if "\x1f" not in line:
+    for rec in raw.split("\x1e"):
+        rec = rec.strip("\n")
+        if not rec.strip():
             continue
-        sha, subject = line.split("\x1f", 1)
-        out.append((sha.strip(), subject.strip()))
+        parts = rec.split("\x1f")
+        if len(parts) < 2:
+            continue
+        sha, subject = parts[0].strip(), parts[1].strip()
+        body = parts[2] if len(parts) > 2 else ""
+        out.append((sha, subject, body))
+    return out
+
+
+def _bullets(body: str, limit: int = 6, width: int = 120) -> List[str]:
+    """把提交正文里的列表项抽出来，折行的续行拼回去，太长就截断。
+
+    只认「列表项 + 紧邻的折行」；空行之后的段落是另一段话，不算条目。
+    """
+    items: List[str] = []
+    fresh_para = True          # 上一个非空行之后是否隔了空行
+    for line in body.splitlines():
+        s = line.strip()
+        if not s:
+            fresh_para = True
+            continue
+        if s.startswith(("- ", "* ")):
+            items.append(s[2:].strip())
+            fresh_para = False
+        elif items and not fresh_para and not s.startswith(("#", "|", ">", "```")):
+            items[-1] = (items[-1] + s).strip()
+        else:
+            fresh_para = True
+    out = []
+    for s in items[:limit]:
+        out.append(s if len(s) <= width else s[:width - 1] + "…")
     return out
 
 
@@ -121,7 +151,7 @@ def sha256_of(path: Path) -> str:
 
 def render(version: str,
            exe: Optional[Path],
-           changes: List[Tuple[str, str]],
+           changes: List[Tuple[str, str, str]],
            sha: str,
            prev: Optional[str],
            note: str = "",
@@ -150,8 +180,10 @@ def render(version: str,
 
     lines += ["## 本版改动", ""]
     if changes:
-        for csha, subject in changes:
+        for csha, subject, body in changes:
             lines.append(f"- `{csha}` {subject}")
+            for bullet in _bullets(body):
+                lines.append(f"  - {bullet}")
     else:
         lines.append("- 本次打包未发现新的代码提交（重建或仅改打包参数）。")
     lines.append("")
