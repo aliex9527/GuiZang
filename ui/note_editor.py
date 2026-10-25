@@ -64,6 +64,21 @@ _INLINE_RULES = [
 ]
 
 
+def _relayout_block(edit: QTextEdit, block) -> None:
+    """强制某个块重新排版。
+
+    Qt 在 setBlockCharFormat / setBlockFormat 之后不会把该块标记为 dirty，
+    于是「块里还没有字符」（空行，或者只有段落符）时光标矩形会返回一个
+    塌陷的小高度（实测 10px，而正常 H1 是 38px），视觉上就是**光标不见了**，
+    必须打一个字才恢复。这里显式把块内容标脏，让布局立即重算。
+    """
+    if block is None or not block.isValid():
+        return
+    doc = edit.document()
+    if doc is not None:
+        doc.markContentsDirty(block.position(), max(1, block.length()))
+
+
 class NoteDocument(QTextDocument):
     """让 <img src="gzs:///12"> 从库内 BLOB 取图。"""
 
@@ -236,6 +251,7 @@ class MarkdownEdit(QTextEdit):
                 cur = self.textCursor()
                 cur.setBlockCharFormat(fmt)
                 self.setCurrentCharFormat(fmt)
+                _relayout_block(self, block)
             return
         if (block.textList() is not None
                 or bf.leftMargin() >= 18
@@ -1499,6 +1515,7 @@ class NoteEditor(QWidget):
 
         block = cur.block()
         if whole_block and block.length() > 1:
+            keep = cur.position()          # 用户原来的插入点，收掉选区后要还回去
             c = QTextCursor(block)
             c.setPosition(block.position())
             c.setPosition(block.position() + block.length() - 1, QTextCursor.KeepAnchor)
@@ -1506,7 +1523,10 @@ class NoteEditor(QWidget):
             # 这个选区是我们自己造出来套格式用的，必须收掉。
             # 留着的话，紧接着按回车（insertBlock）或打字会把整块当成"要替换的
             # 内容"直接删掉 —— 表现为「设成标题1后再回车，整行文字消失」。
+            # 注意：clearSelection() 之后 QTextCursor 停在选区末尾（行尾），
+            # 必须显式 setPosition 还原，否则在行首按 Ctrl+1 光标会"跳没了"。
             c.clearSelection()
+            c.setPosition(keep)
             edit.setTextCursor(c)
             edit.mergeCurrentCharFormat(fmt)
             edit.setFocus()
@@ -1517,11 +1537,13 @@ class NoteEditor(QWidget):
         inside_word = (0 < pos < len(text)
                        and text[pos - 1].isalnum() and text[pos].isalnum())
         if inside_word:
+            keep = cur.position()
             word = QTextCursor(cur)
             word.select(QTextCursor.WordUnderCursor)
             if word.hasSelection():
                 word.mergeCharFormat(fmt)
                 word.clearSelection()   # 同上：临时选区用完就收
+                word.setPosition(keep)  # 收掉后停在词尾，还原到原来的插入点
                 edit.setTextCursor(word)
         edit.mergeCurrentCharFormat(fmt)
         edit.setFocus()
@@ -1742,6 +1764,7 @@ class NoteEditor(QWidget):
         bc = QTextCursor(block)
         bc.setBlockCharFormat(fmt)
         self.edit.mergeCurrentCharFormat(fmt)   # 光标高度 + 后续输入
+        _relayout_block(self.edit, block)
 
     def toggle_list(self, style) -> None:
         cur = self.edit.textCursor()
