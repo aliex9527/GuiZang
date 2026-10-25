@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Windows 一键打包：文件名带版本号，磁盘上只保留最新一版。
+"""Windows 一键打包：每个版本独立目录，历史版本全部保留。
 
 用法（在仓库根目录执行）：
     python tools/build_win.py               按 VERSION 里的版本打包
@@ -11,11 +11,13 @@
 
 产物：
     dist/GuiZang-<版本>-windows-x64/GuiZang-<版本>-windows-x64.exe
+    dist/GuiZang-<版本>-windows-x64/版本说明.md      （同时写入 docs/releases/v<版本>.md）
 
-打包成功后会删掉 dist 下更早版本的目录，只留这一版。
-旧目录里如果躺着便携资料库（第一次运行 exe 时生成的 归藏.db），
-会先搬到新目录再删，不会连数据一起删掉。
-同版本重复打包默认报错；确需重打加 --force。
+规则：
+    - 每个版本的目录都不会被删，想回退直接开旧版本目录里的 exe
+    - 新版本目录里还没有 归藏.db 时，从最近一版**复制**一份过来（旧目录不动的），
+      这样升级后打开就有原来的笔记；旧目录里的那份是打包时的快照
+    - 同版本重复打包默认报错；确需重打加 --force
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
+import release_note as rn  # noqa: E402
 import win_version as wv  # noqa: E402
 
 
@@ -42,41 +45,36 @@ def bump(ver: str, part: str) -> str:
     return f"{v0}.{v1}.{v2 + 1}"
 
 
-def prune_old(dist_root: Path, keep: Path) -> list:
-    """删掉 dist 下更早版本的产物目录，只留下 keep 这一版。
+def inherit_db(dist_root: Path, new_dir: Path) -> list:
+    """新版本目录没有资料库时，从最近一版复制一份过来。
 
-    旧目录里可能已经有便携资料库（`归藏.db` 及其 -wal/-shm），
-    先把它们搬到新目录再删，避免把用户的笔记一起删掉。
+    注意是**复制**不是移动：历史版本目录要原样留着，删掉/搬走会让旧版 exe
+    打开变空库。这里的 db 只是「打包那一刻的快照」，日常仍以最新版目录为准。
     """
-    removed = []
+    if list(new_dir.glob("*.db")):
+        return []
     if not dist_root.exists():
-        return removed
-    # 从新到旧地处理：旧目录里的资料库如果新目录还没有，优先搬最新的那个
+        return []
     olds = sorted((p for p in dist_root.glob("GuiZang-*-windows-x64") if p.is_dir()),
                   key=lambda p: p.stat().st_mtime, reverse=True)
     for old in olds:
-        if old.resolve() == keep.resolve():
+        if old.resolve() == new_dir.resolve():
             continue
-        for pattern in ("*.db", "*.db-wal", "*.db-shm"):
-            for src in sorted(old.glob(pattern)):
-                dst = keep / src.name
-                if dst.exists():
-                    continue
-                try:
-                    shutil.move(str(src), str(dst))
-                    print(f"  搬移资料库：{src.name} ← {old.name}")
-                except OSError as exc:
-                    print(f"  ! {src.name} 搬不动，跳过：{exc}")
-        shutil.rmtree(old, ignore_errors=True)
-        removed.append(old.name)
-    # dist 根下遗留的散落 exe 一并清掉
-    for stray in list(dist_root.glob("GuiZang*.exe")):
-        try:
-            stray.unlink()
-            removed.append(stray.name)
-        except OSError:
-            pass
-    return removed
+        srcs = sorted(old.glob("*.db"))
+        if not srcs:
+            continue
+        for src in srcs:
+            try:
+                shutil.copy2(src, new_dir / src.name)
+                # 有 -wal 一起带上，避免丢掉最近一次未合并的写入
+                wal = src.with_name(src.name + "-wal")
+                if wal.exists():
+                    shutil.copy2(wal, new_dir / wal.name)
+                print(f"  继承资料库：{src.name} ← {old.name}")
+                return [src.name]
+            except OSError as exc:
+                print(f"  ! {src.name} 复制失败，跳过：{exc}")
+    return []
 
 
 def main(argv: list) -> int:
@@ -141,17 +139,20 @@ def main(argv: list) -> int:
     shutil.move(str(built), str(target))
     shutil.rmtree(tmp_dist, ignore_errors=True)
 
+    inherited = inherit_db(ROOT / "dist", out_dir)
+
     # 打包成功才把版本写回 VERSION，避免构建失败留下一个没用上的版本号
     (ROOT / "VERSION").write_text(version + "\n", encoding="utf-8", newline="\n")
 
-    removed = prune_old(ROOT / "dist", out_dir)
-
     size = target.stat().st_size / (1024 * 1024)
     print()
-    for name in removed:
-        print(f"− 已清理旧版本：{name}")
+    for name in inherited:
+        print(f"＋ 已带上一版资料库：{name}")
+
+    note_path = rn.write_note(version, exe=target)
     print(f"√ 完成：{target}")
     print(f"  大小：{size:.2f} MB")
+    print(f"  版本说明：{note_path}")
     print(f"  VERSION 已写为 {version}")
     return 0
 
