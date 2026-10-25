@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Windows 一键打包：一个版本一个目录，绝不覆盖旧版本。
+"""Windows 一键打包：文件名带版本号，磁盘上只保留最新一版。
 
 用法（在仓库根目录执行）：
     python tools/build_win.py               按 VERSION 里的版本打包
@@ -12,7 +12,10 @@
 产物：
     dist/GuiZang-<版本>-windows-x64/GuiZang-<版本>-windows-x64.exe
 
-目标文件已存在时直接报错退出（不会覆盖）。确需重打同一版本加 --force。
+打包成功后会删掉 dist 下更早版本的目录，只留这一版。
+旧目录里如果躺着便携资料库（第一次运行 exe 时生成的 归藏.db），
+会先搬到新目录再删，不会连数据一起删掉。
+同版本重复打包默认报错；确需重打加 --force。
 """
 
 from __future__ import annotations
@@ -37,6 +40,43 @@ def bump(ver: str, part: str) -> str:
     if part == "minor":
         return f"{v0}.{v1 + 1}.0"
     return f"{v0}.{v1}.{v2 + 1}"
+
+
+def prune_old(dist_root: Path, keep: Path) -> list:
+    """删掉 dist 下更早版本的产物目录，只留下 keep 这一版。
+
+    旧目录里可能已经有便携资料库（`归藏.db` 及其 -wal/-shm），
+    先把它们搬到新目录再删，避免把用户的笔记一起删掉。
+    """
+    removed = []
+    if not dist_root.exists():
+        return removed
+    # 从新到旧地处理：旧目录里的资料库如果新目录还没有，优先搬最新的那个
+    olds = sorted((p for p in dist_root.glob("GuiZang-*-windows-x64") if p.is_dir()),
+                  key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in olds:
+        if old.resolve() == keep.resolve():
+            continue
+        for pattern in ("*.db", "*.db-wal", "*.db-shm"):
+            for src in sorted(old.glob(pattern)):
+                dst = keep / src.name
+                if dst.exists():
+                    continue
+                try:
+                    shutil.move(str(src), str(dst))
+                    print(f"  搬移资料库：{src.name} ← {old.name}")
+                except OSError as exc:
+                    print(f"  ! {src.name} 搬不动，跳过：{exc}")
+        shutil.rmtree(old, ignore_errors=True)
+        removed.append(old.name)
+    # dist 根下遗留的散落 exe 一并清掉
+    for stray in list(dist_root.glob("GuiZang*.exe")):
+        try:
+            stray.unlink()
+            removed.append(stray.name)
+        except OSError:
+            pass
+    return removed
 
 
 def main(argv: list) -> int:
@@ -104,8 +144,12 @@ def main(argv: list) -> int:
     # 打包成功才把版本写回 VERSION，避免构建失败留下一个没用上的版本号
     (ROOT / "VERSION").write_text(version + "\n", encoding="utf-8", newline="\n")
 
+    removed = prune_old(ROOT / "dist", out_dir)
+
     size = target.stat().st_size / (1024 * 1024)
     print()
+    for name in removed:
+        print(f"− 已清理旧版本：{name}")
     print(f"√ 完成：{target}")
     print(f"  大小：{size:.2f} MB")
     print(f"  VERSION 已写为 {version}")
