@@ -2038,6 +2038,7 @@ class DatabaseView(QWidget):
             f"已精简：{human_size(result['before'])} → {human_size(result['after'])}", 8000)
         msgbox.info(
             self, "精简完成",
+            f"新压缩正文：{result.get('notes', 0)} 条\n"
             f"新压缩附件：{result['packed']} 个\n"
             f"{human_size(result['before'])} → {human_size(result['after'])}")
 

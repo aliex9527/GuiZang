@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .storage import guess_mime, sha256_bytes
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
@@ -35,6 +35,7 @@ SCHEMA = [
         parent_id   INTEGER REFERENCES nodes(id) ON DELETE CASCADE,
         title       TEXT    NOT NULL DEFAULT '',
         note_text   TEXT    NOT NULL DEFAULT '',
+        note_gz     BLOB,
         note_format TEXT    NOT NULL DEFAULT 'md',
         note_plain  TEXT    NOT NULL DEFAULT '',
         tags        TEXT    NOT NULL DEFAULT '',
@@ -78,7 +79,27 @@ INDEXES = [
 
 
 _MIN_SAVING = 40          # 至少省下这么多字节才值得压缩
-_ZLEVEL = 6
+_ZLEVEL = 6               # 附件压缩级别（体积与入库速度折中）
+_TEXT_MIN = 128           # 正文短于这个长度就不压，压了反而更大
+_TEXT_ZLEVEL = 9          # 正文压缩级别：读写都在本地，慢一点换更小体积
+
+
+def _pack_text(text: str) -> Tuple[str, Optional[bytes]]:
+    """正文压缩存储：返回 (仍明文存的文本, 压缩后的字节)。
+
+    能压时返回 ('', 压缩字节)，读的时候由 :meth:`Database._inflate_note` 解压。
+    Markdown 正文的压缩率通常在 85%~92%（重复的标记、空格、中文词组）。
+    """
+    if not text or len(text) < _TEXT_MIN:
+        return text, None
+    raw = text.encode("utf-8")
+    try:
+        comp = zlib.compress(raw, _TEXT_ZLEVEL)
+    except zlib.error:
+        return text, None
+    if len(comp) < len(raw) - _MIN_SAVING:
+        return "", comp
+    return text, None
 
 
 def _pack(data: bytes) -> tuple[bytes, int]:
@@ -132,7 +153,7 @@ GUIDE_MD = """# 欢迎使用 归藏
 | 位置 | 作用 |
 |---|---|
 | 左侧 | 分类树，右键新建 / F2 重命名 / 直接拖动改变层级 |
-| 中间 | 当前条目的笔记，边写边自动存，也可以按 Ctrl+S |
+| 中间 | 当前条目的笔记，Ctrl+S 保存；关窗前会问你有没有存 |
 | 附件 | 把文件直接拖进笔记正文，就存成这个条目的附件（内容进数据库） |
 
 ## 记笔记就一种写法：Markdown
@@ -152,6 +173,8 @@ GUIDE_MD = """# 欢迎使用 归藏
 - [ ] 按 F1 看全部快捷键
 
 > 笔记与附件都装在库里，不依赖任何外部文件。
+> 正文和附件入库时都会压缩（Markdown 一般只剩原来的一成左右），
+> 所以同一个库能多装不少东西。
 """
 
 
@@ -206,6 +229,29 @@ class Database:
             self.conn.execute(
                 "ALTER TABLE nodes ADD COLUMN starred INTEGER NOT NULL DEFAULT 0")
             self.conn.commit()
+
+        if ncols and "note_gz" not in ncols:
+            # 升级到 5：正文改成压缩存储，老库在这里一次性压完
+            self.conn.execute("ALTER TABLE nodes ADD COLUMN note_gz BLOB")
+            self.conn.commit()
+            for r in list(self.conn.execute(
+                    "SELECT id, note_text FROM nodes WHERE length(note_text) >= ?",
+                    (_TEXT_MIN,))):
+                stored, packed = _pack_text(r["note_text"])
+                if packed is not None:
+                    self.conn.execute(
+                        "UPDATE nodes SET note_text = '', note_gz = ? WHERE id = ?",
+                        (sqlite3.Binary(packed), r["id"]))
+            self.conn.commit()
+            # 压缩只是把新数据写进新页，腾出来的旧页还占着文件；VACUUM 才真正落地。
+            # 超大库 VACUUM 很慢（要重建整库），留给「精简数据库」按需执行。
+            if self.disk_size() < 512 * 1024 * 1024:
+                try:
+                    self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    self.conn.execute("VACUUM")
+                    self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except sqlite3.Error:
+                    pass
 
         bcols = {r["name"] for r in self.conn.execute("PRAGMA table_info(blobs)")}
         if bcols and "compressed" not in bcols:
@@ -269,11 +315,14 @@ class Database:
     ) -> int:
         ts = now_str()
         plain = self._plain_of(note_text, note_format)
+        stored, packed = _pack_text(note_text)
         cur = self.conn.execute(
-            "INSERT INTO nodes(parent_id, title, note_text, note_format, note_plain, tags, "
-            "sort_order, expanded, created_at, updated_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
-            (parent_id, title, note_text, note_format, plain, tags,
+            "INSERT INTO nodes(parent_id, title, note_text, note_gz, note_format, note_plain, "
+            "tags, sort_order, expanded, created_at, updated_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            (parent_id, title, stored,
+             sqlite3.Binary(packed) if packed is not None else None,
+             note_format, plain, tags,
              self._next_order(parent_id), ts, ts),
         )
         self.conn.commit()
@@ -307,8 +356,23 @@ class Database:
         body = re.sub(r"[#>*`_~=|]", " ", body)
         return _WS_RE.sub(" ", body).strip()
 
-    def get_node(self, node_id: int) -> Optional[sqlite3.Row]:
-        return self.conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
+    def get_node(self, node_id: int) -> Optional[Dict[str, Any]]:
+        """取一条笔记。正文若是压缩存储，这里透明解压后返回。"""
+        row = self.conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
+        return self._inflate_note(row) if row is not None else None
+
+    @staticmethod
+    def _inflate_note(row: sqlite3.Row) -> Dict[str, Any]:
+        """把 note_gz 解压回 note_text，返回普通 dict（键名与原 Row 一致）。"""
+        d: Dict[str, Any] = dict(row)
+        gz = d.pop("note_gz", None)
+        if gz:
+            try:
+                d["note_text"] = zlib.decompress(bytes(gz)).decode("utf-8", "replace")
+            except (zlib.error, UnicodeDecodeError):
+                # 数据坏了也不能让整条笔记打不开，退化成空正文
+                d["note_text"] = d.get("note_text") or ""
+        return d
 
     def all_nodes(self) -> List[sqlite3.Row]:
         return list(self.conn.execute(
@@ -461,6 +525,14 @@ class Database:
         for k, v in fields.items():
             if k not in allowed:
                 raise ValueError(f"不允许更新的字段: {k}")
+            if k == "note_text":
+                # 正文一律压缩进 note_gz，note_text 留空（老版本读到空正文，升级后请勿回退旧版）
+                stored, packed = _pack_text(v)
+                sets.append("note_text = ?")
+                vals.append(stored)
+                sets.append("note_gz = ?")
+                vals.append(sqlite3.Binary(packed) if packed is not None else None)
+                continue
             sets.append(f"{k} = ?")
             vals.append(v)
         if "note_text" in fields:
@@ -718,13 +790,26 @@ class Database:
                     (sqlite3.Binary(payload), r["hash"]))
                 packed += 1
         self.conn.commit()
+        # 顺便把还没压缩的正文也压掉（老库升级后可能还留着明文）
+        notes = 0
+        for r in list(self.conn.execute(
+                "SELECT id, note_text FROM nodes "
+                "WHERE note_gz IS NULL AND length(note_text) >= ?", (_TEXT_MIN,))):
+            stored, comp = _pack_text(r["note_text"])
+            if comp is not None:
+                self.conn.execute(
+                    "UPDATE nodes SET note_text = '', note_gz = ? WHERE id = ?",
+                    (sqlite3.Binary(comp), r["id"]))
+                notes += 1
+        self.conn.commit()
         try:
             self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             self.conn.execute("VACUUM")
             self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         except sqlite3.Error:
             pass
-        return {"packed": packed, "before": before, "after": self.disk_size()}
+        return {"packed": packed, "notes": notes,
+                "before": before, "after": self.disk_size()}
 
     # -------------------------------------------------------------- backup
 

@@ -604,14 +604,17 @@ def migrate_html_notes(db) -> int:
     幂等：转换后 note_format 变 'md'，下次打开不会再处理。
     """
     try:
-        rows = db.conn.execute(
-            "SELECT id, note_text FROM nodes WHERE COALESCE(note_format, '') <> 'md'"
-        ).fetchall()
+        ids = [r["id"] for r in db.conn.execute(
+            "SELECT id FROM nodes WHERE COALESCE(note_format, '') <> 'md'")]
     except Exception:  # noqa: BLE001
         return 0
     done = 0
-    for row in rows:
-        node_id, html = row[0], (row[1] or "")
+    for node_id in ids:
+        # 正文可能压缩在 note_gz 里，统一走 get_node 解压后再转换
+        node = db.get_node(node_id)
+        if node is None:
+            continue
+        html = node["note_text"] or ""
         if not html.strip():
             db.update_node(node_id, note_text="", note_format="md")
             continue
