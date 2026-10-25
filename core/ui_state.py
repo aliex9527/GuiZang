@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -39,6 +40,39 @@ def app_dir() -> Path:
 def portable_db() -> Path:
     """便携库：程序目录下的 归藏.db。它的 meta 里顺便记住上次打开的库。"""
     return app_dir() / DEFAULT_NAME
+
+
+def default_library_path() -> Path:
+    """默认资料库位置：程序目录能写就放程序目录（便携），否则放系统用户目录。
+
+    首次启动的欢迎框、以及没有指定库时的兜底路径都用它。
+    """
+    root = app_dir()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        probe = root / ".write_test"
+        probe.write_text("1", encoding="utf-8")
+        probe.unlink()
+        return root / DEFAULT_NAME
+    except OSError:
+        pass
+    if sys.platform.startswith("win"):
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    else:
+        base = Path.home() / ".local" / "share"
+    folder = base / "GuiZang"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / DEFAULT_NAME
+
+
+def is_first_run() -> bool:
+    """还没有任何资料库痕迹的「首次启动」。
+
+    上次打开的库记在便携库（程序目录下的 归藏.db）里，所以便携库不存在
+    就说明这台机器上还没用过归藏。程序目录只读时便携库永远建不出来，
+    这种情况会每次都问一遍——总比默默在别处建个空库好。
+    """
+    return not portable_db().exists()
 
 
 def last_library() -> Optional[Path]:

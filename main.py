@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -92,6 +93,18 @@ def migrate_legacy(target: Path) -> bool:
     return True
 
 
+def _explicit_db_arg(argv: list[str]) -> bool:
+    """命令行/环境变量是否已经把库定死了（那就跳过首次欢迎框）。"""
+    if os.environ.get("GUIZANG_DB"):
+        return True
+    for arg in argv:
+        if arg in ("--db", "--data", "-d"):
+            return True
+        if arg.startswith(("--db=", "--data=")):
+            return True
+    return False
+
+
 def main() -> int:
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QFont
@@ -119,12 +132,35 @@ def main() -> int:
 
     clear_cache()
 
-    db_file = resolve_db_file(sys.argv[1:])
-    db_file.parent.mkdir(parents=True, exist_ok=True)
-    if db_file == app_root() / DEFAULT_NAME:
-        migrate_legacy(db_file)
+    from core.ui_state import is_first_run
+    from PySide6.QtWidgets import QDialog
 
-    db = Database(db_file)
+    if not _explicit_db_arg(sys.argv[1:]) and is_first_run():
+        # 首次启动：硬盘上还没有任何库，先让用户选「创建」还是「打开」。
+        # 这里得先把外观铺上——主题通常从库里读，此刻还没有库，用浅色打底。
+        from ui import msgbox
+        from ui.welcome import WelcomeDialog
+        theme.apply_theme("light")
+        app.setStyleSheet(style.qss())
+        app.setWindowIcon(app_icon())
+        db = None
+        while db is None:
+            dlg = WelcomeDialog()
+            if dlg.exec() != QDialog.DialogCode.Accepted or dlg.choice is None:
+                return 0                       # 关掉欢迎框 = 先不建库，直接退出
+            target = dlg.choice
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                db = Database(target)
+            except (OSError, sqlite3.Error) as exc:
+                msgbox.error(None, "无法打开资料库", f"{target}\n\n{exc}")
+    else:
+        db_file = resolve_db_file(sys.argv[1:])
+        db_file.parent.mkdir(parents=True, exist_ok=True)
+        if db_file == app_root() / DEFAULT_NAME:
+            migrate_legacy(db_file)
+        db = Database(db_file)
+
     # 历史笔记存的是 HTML；这里一次性转成 Markdown 源码，此后库里只有 Markdown
     from ui.md_source import migrate_html_notes
     migrate_html_notes(db)
