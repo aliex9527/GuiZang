@@ -87,6 +87,7 @@ ACTIONS: List[Action] = [
     Action("source_mode", "源码 / 即时渲染切换", "视图", "Ctrl+/"),
     Action("focus_mode", "专注模式", "视图", "F8"),
     Action("typewriter", "打字机模式", "视图", "F9"),
+    Action("attach_panel", "显示/隐藏附件栏", "视图", "Ctrl+Shift+E"),
     Action("fullscreen", "全屏", "视图", "F11"),
     Action("zoom_in", "放大", "视图", "Ctrl+Shift+="),
     Action("zoom_out", "缩小", "视图", "Ctrl+Shift+-"),

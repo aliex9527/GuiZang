@@ -587,6 +587,8 @@ class DatabaseView(QWidget):
             "save": self.save_now,
             "backup": self.backup,
             "add_attachment": self.pick_attachments,
+            # 附件栏默认收起，所以给一个随时能叫出来的键
+            "attach_panel": lambda: self._toggle_attach_panel(self.attachments.isHidden()),
             "toggle_star": self.toggle_star,
             "close_tab": self.close_requested.emit,
             "move_up": lambda: self.move_item(-1),
@@ -951,7 +953,7 @@ class DatabaseView(QWidget):
         self.act_side.setChecked(True)
         self.act_side.triggered.connect(
             lambda c: self.splitter.widget(0).setVisible(c))
-        self.act_attach = m.addAction("显示附件栏")
+        self.act_attach = m.addAction(self._mtxt("attach_panel", "显示附件栏"))
         self.act_attach.setCheckable(True)
         # _restore_state() 可能已经把附件栏恢复了，菜单勾选状态要跟实际可见性一致。
         # 这里用 isHidden()（反映显隐意图）而不是 isVisible()：菜单构建时窗口
@@ -1019,6 +1021,8 @@ class DatabaseView(QWidget):
             self.act_attach.setChecked(on)
         if hasattr(self, "settings"):
             self.settings.setValue("attach_panel", on)
+            # 记下用户主动开／关过，_restore_state 的一次性迁移就不会再把它按回隐藏
+            self.settings.setValue("attach_panel_migrated", True)
         if on:
             sizes = self.vsplitter.sizes()
             if len(sizes) != 2 or sizes[1] < 80:
@@ -1447,9 +1451,11 @@ class DatabaseView(QWidget):
         self._syncing_item = False
         self._update_path(node_id)
         self.attachments.set_node(node_id)
-        # 回到编辑界面：按上次的开关恢复附件栏（空状态时会临时收起）
-        if self.settings.value("attach_panel", True, type=bool):
-            self.attachments.setVisible(True)
+        # 回到编辑界面：按开关状态恢复附件栏（空状态时会临时收起）。
+        # 这里必须显式 setVisible(on)：只写 `if on: setVisible(True)` 的话，
+        # 一旦前面有别的路径把它显示过，切回条目就再也收不起来了。
+        self.attachments.setVisible(
+            bool(self.settings.value("attach_panel", False, type=bool)))
         self.empty_hint.hide()
         self._apply_icon_theme()
         self._push_nav(node_id)
@@ -2139,7 +2145,14 @@ class DatabaseView(QWidget):
         else:
             self._sync_theme_checks(theme_mod.current())
 
-        if self.settings.value("attach_panel", True, type=bool):
+        # 附件栏默认收起，编辑界面只留正文。
+        # 旧版默认是展开的，老库里可能已经存了 attach_panel=true，
+        # 所以第一次运行本版时把这个旧值作废一次（用一次性标记），
+        # 之后用户手动打开仍会照常记住。
+        if not self.settings.value("attach_panel_migrated", False, type=bool):
+            self.settings.setValue("attach_panel", False)
+            self.settings.setValue("attach_panel_migrated", True)
+        elif self.settings.value("attach_panel", False, type=bool):
             self.show_attach_panel()
 
         last = self.db.get_meta("last_node", "")
