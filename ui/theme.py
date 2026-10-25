@@ -26,6 +26,10 @@ LIGHT: Dict[str, str] = {
     "white": "#ffffff",
     "shadow": "#d3d8e3",
     "shadow_hover": "#b9c1d1",
+    # 对话框按钮（保存 / 不保存 / 取消）：比面板深一档，从背景里立起来
+    "btn_bg": "#d9dfe9",
+    "btn_bg_hover": "#cbd2e0",
+    "btn_bg_pressed": "#bcc4d5",
     # 分类树（myBase 风格：整行实心蓝条 + 白字 + 层级虚线）
     "select_bg": "#0078d4",
     "select_fg": "#ffffff",
@@ -60,6 +64,10 @@ DARK: Dict[str, str] = {
     "white": "#21252e",
     "shadow": "#3a4150",
     "shadow_hover": "#4a5263",
+    # 对话框按钮（保存 / 不保存 / 取消）：比面板深一档，从背景里立起来
+    "btn_bg": "#3a4351",
+    "btn_bg_hover": "#46505f",
+    "btn_bg_pressed": "#525d6f",
     # 分类树（myBase 风格：整行实心蓝条 + 白字 + 层级虚线）
     "select_bg": "#1f6feb",
     "select_fg": "#ffffff",

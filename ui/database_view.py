@@ -1580,6 +1580,30 @@ class DatabaseView(QWidget):
         self._set_save_state(False)
         self.status_message.emit("已保存", 2500)
 
+    @staticmethod
+    def _unsaved_box_qss() -> str:
+        """「保存 / 不保存 / 取消」按钮用比面板更深一档的底色。"""
+        return f"""
+        QMessageBox QPushButton {{
+            background: {P["btn_bg"]};
+            border: 1px solid {P["border"]};
+            border-radius: 6px;
+            padding: 5px 16px;
+            min-width: 58px;
+            color: {P["text"]};
+        }}
+        QMessageBox QPushButton:hover {{
+            background: {P["btn_bg_hover"]};
+            border-color: {P["shadow_hover"]};
+        }}
+        QMessageBox QPushButton:pressed {{
+            background: {P["btn_bg_pressed"]};
+        }}
+        QMessageBox QPushButton:default {{
+            border-color: {P["accent_line"]};
+        }}
+        """
+
     def confirm_unsaved(self, action: str = "继续") -> bool:
         """有未保存改动时问「保存 / 不保存 / 取消」。
 
@@ -1601,6 +1625,7 @@ class DatabaseView(QWidget):
         btn_cancel = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(btn_save)
         box.setEscapeButton(btn_cancel)
+        box.setStyleSheet(self._unsaved_box_qss())
         box.exec()
 
         hit = box.clickedButton()
