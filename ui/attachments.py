@@ -8,12 +8,12 @@ from typing import List, Optional
 from PySide6.QtCore import QEvent, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QHBoxLayout,
-                               QHeaderView, QInputDialog, QLabel, QMenu, QMessageBox,
-                               QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout,
-                               QWidget)
+                               QHeaderView, QInputDialog, QLabel, QMenu, QTableWidget,
+                               QTableWidgetItem, QToolButton, QVBoxLayout, QWidget)
 
 from core.database import Database
 from core.storage import ext_of, human_size
+from ui import msgbox
 from ui.icons import chip_icon
 from ui.open_file import open_attachment
 from ui.theme import P
@@ -183,7 +183,7 @@ class AttachmentPanel(QWidget):
             self.refresh()
             self.status.emit(f"已添加 {added} 个文件")
         if failed:
-            QMessageBox.warning(self, "部分文件未能添加", "\n".join(failed[:10]))
+            msgbox.warn(self, "部分文件未能添加", "\n".join(failed[:10]))
         return added
 
     def open_selected(self) -> None:
@@ -208,7 +208,7 @@ class AttachmentPanel(QWidget):
             Path(target).write_bytes(data)
             self.status.emit(f"已另存为 {target}")
         except OSError as exc:
-            QMessageBox.critical(self, "保存失败", str(exc))
+            msgbox.error(self, "保存失败", str(exc))
 
     def rename(self) -> None:
         fid = self._current_file_id()
@@ -227,11 +227,10 @@ class AttachmentPanel(QWidget):
         if not ids:
             return
         names = [self.db.get_file(i)["name"] for i in ids if self.db.get_file(i)]
-        if QMessageBox.question(
-                self, "删除附件",
-                f"确定删除 {len(ids)} 个附件？\n\n" + "\n".join(names[:8])
-                + ("\n…" if len(names) > 8 else ""),
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+        if not msgbox.ask(
+                self, "删除附件", f"确定删除 {len(ids)} 个附件？",
+                informative="\n".join(names[:8]) + ("\n…" if len(names) > 8 else ""),
+                ok="删除", danger=True):
             return
         for fid in ids:
             self.db.delete_file(fid)

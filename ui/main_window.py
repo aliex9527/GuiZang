@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QApplication, QLabel, QMainWindow, QMessageBox,
 
 from core.database import Database
 from core.ui_state import DbState, remember_library
+from ui import msgbox
 from ui.database_view import DatabaseView
 from ui.icons import app_icon
 
@@ -162,7 +163,7 @@ class MainWindow(QMainWindow):
         try:
             new_db = Database(path)
         except sqlite3.Error as exc:
-            QMessageBox.critical(self, "无法打开资料库", str(exc))
+            msgbox.error(self, "无法打开资料库", str(exc))
             return
         self._open_db(new_db)
 
@@ -170,7 +171,7 @@ class MainWindow(QMainWindow):
         try:
             new_db = Database(path)
         except sqlite3.Error as exc:
-            QMessageBox.critical(self, "无法创建资料库", str(exc))
+            msgbox.error(self, "无法创建资料库", str(exc))
             return
         self._open_db(new_db)
 

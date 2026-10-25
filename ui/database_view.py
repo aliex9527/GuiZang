@@ -32,6 +32,7 @@ import sqlite3
 from core.database import Database
 from core.ui_state import DbState, splitter_sizes
 from core.storage import human_size
+from ui import msgbox
 from ui.attachments import AttachmentPanel
 from ui.icons import app_icon, file_icon, folder_icon, leaf_icon
 from ui.keymap import ACTIONS, Action, action_by_id
@@ -440,7 +441,7 @@ class DatabaseView(QWidget):
         st = self.db.node_stats(self._current_id)
         if not st:
             return
-        QMessageBox.information(
+        msgbox.info(
             self, "条目统计",
             f"名称：{st['title']}\n路径：{st['path']}\n\n"
             f"子条目：{st['children']}\n附件：{st['files']}（{human_size(st['bytes'])}）\n"
@@ -1244,7 +1245,7 @@ class DatabaseView(QWidget):
         self.fullscreen_toggled.emit()
 
     def set_theme(self, name: str) -> None:
-        from ui import style, theme
+        from ui import msgbox, style, theme
         theme.apply_theme(name)
         app = QApplication.instance()
         if app is not None:
@@ -1289,7 +1290,7 @@ class DatabaseView(QWidget):
         from core.version import app_version
         plat = ("Windows" if sys.platform.startswith("win")
                 else "macOS" if sys.platform == "darwin" else "Linux")
-        QMessageBox.about(
+        msgbox.say(
             self, "关于 归藏",
             "<b>归藏</b> · 个人资料库"
             f"<br><span style='color:#6b7280;'>版本 {app_version()}（{plat}）</span><br><br>"
@@ -1557,9 +1558,7 @@ class DatabaseView(QWidget):
         msg = f"确定删除「{self.db.title_of(node_id)}」？"
         if sub or files:
             msg += f"\n\n将一并删除其下 {sub} 个子条目、{files} 个附件。"
-        if QMessageBox.question(self, "删除条目", msg,
-                                QMessageBox.Yes | QMessageBox.No,
-                                QMessageBox.No) != QMessageBox.Yes:
+        if not msgbox.ask(self, "删除条目", msg, ok="删除", danger=True):
             return
         parent = self.db.get_node(node_id)
         parent_id = parent["parent_id"] if parent else None
@@ -1586,30 +1585,6 @@ class DatabaseView(QWidget):
         self._set_save_state(False)
         self.status_message.emit("已保存", 2500)
 
-    @staticmethod
-    def _unsaved_box_qss() -> str:
-        """「保存 / 不保存 / 取消」按钮用比面板更深一档的底色。"""
-        return f"""
-        QMessageBox QPushButton {{
-            background: {P["btn_bg"]};
-            border: 1px solid {P["border"]};
-            border-radius: 6px;
-            padding: 5px 16px;
-            min-width: 58px;
-            color: {P["text"]};
-        }}
-        QMessageBox QPushButton:hover {{
-            background: {P["btn_bg_hover"]};
-            border-color: {P["shadow_hover"]};
-        }}
-        QMessageBox QPushButton:pressed {{
-            background: {P["btn_bg_pressed"]};
-        }}
-        QMessageBox QPushButton:default {{
-            border-color: {P["accent_line"]};
-        }}
-        """
-
     def confirm_unsaved(self, action: str = "继续") -> bool:
         """有未保存改动时问「保存 / 不保存 / 取消」。
 
@@ -1631,7 +1606,7 @@ class DatabaseView(QWidget):
         btn_cancel = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(btn_save)
         box.setEscapeButton(btn_cancel)
-        box.setStyleSheet(self._unsaved_box_qss())
+        msgbox.decorate(box)
         box.exec()
 
         hit = box.clickedButton()
@@ -1856,15 +1831,13 @@ class DatabaseView(QWidget):
             return
         total = sum(1 for p in root.rglob("*") if p.is_file())
         if total == 0:
-            QMessageBox.information(self, "导入文件夹", "这个文件夹里没有文件。")
+            msgbox.info(self, "导入文件夹", "这个文件夹里没有文件。")
             return
         if parent_id is None:
-            parent_id = self._current_id if QMessageBox.question(
-                self, "导入位置",
-                f"共 {total} 个文件。\n\n导入到当前选中的条目下吗？\n"
-                "（选「No」则建在顶层）",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes) == QMessageBox.Yes else None
+            parent_id = self._current_id if msgbox.ask(
+                self, "导入位置", f"共 {total} 个文件，导入到哪里？",
+                informative="选「当前条目下」放进选中的条目，选「顶层」新建在根上。",
+                ok="当前条目下", cancel="顶层", default_ok=True) else None
 
         progress = QProgressDialog("正在导入…", "取消", 0, total, self)
         progress.setWindowTitle("导入文件夹")
@@ -1918,12 +1891,10 @@ class DatabaseView(QWidget):
         if self._current_id is None:
             parent_id = None
         else:
-            parent_id = self._current_id if QMessageBox.question(
-                self, "导入位置",
-                f"共 {len(paths)} 个文件。\n\n导入到当前选中的条目下吗？\n"
-                "（选「No」则建在顶层）",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes) == QMessageBox.Yes else None
+            parent_id = self._current_id if msgbox.ask(
+                self, "导入位置", f"共 {len(paths)} 个文件，导入到哪里？",
+                informative="选「当前条目下」放进选中的条目，选「顶层」新建在根上。",
+                ok="当前条目下", cancel="顶层", default_ok=True) else None
 
         progress = QProgressDialog("正在导入…", "取消", 0, len(paths), self)
         progress.setWindowTitle("导入 Markdown 文件")
@@ -1944,7 +1915,7 @@ class DatabaseView(QWidget):
                 try:
                     text = Path(p).read_text(encoding="gbk", errors="replace")
                 except OSError:
-                    QMessageBox.warning(self, "导入失败",
+                    msgbox.warn(self, "导入失败",
                                         f"无法读取文件：\n{p}\n\n{exc}")
                     continue
             title = Path(p).stem
@@ -1970,7 +1941,7 @@ class DatabaseView(QWidget):
         try:
             out = self._export_recursive(node_id, Path(target))
         except OSError as exc:
-            QMessageBox.critical(self, "导出失败", str(exc))
+            msgbox.error(self, "导出失败", str(exc))
             return
         self.status_message.emit(f"已导出到 {out}", 8000)
 
@@ -2039,9 +2010,9 @@ class DatabaseView(QWidget):
         try:
             out = self.db.save_copy_to(Path(target))
         except (OSError, sqlite3.Error) as exc:
-            QMessageBox.critical(self, "备份失败", str(exc))
+            msgbox.error(self, "备份失败", str(exc))
             return
-        QMessageBox.information(
+        msgbox.info(
             self, "备份完成",
             f"已导出完整副本：\n{out}\n\n"
             "这个文件可以单独拷走，随时用「打开资料库」恢复。")
@@ -2050,11 +2021,12 @@ class DatabaseView(QWidget):
         if not self.confirm_unsaved("精简数据库"):
             return
         before = self.db.disk_size()
-        if QMessageBox.question(
-                self, "精简数据库",
-                f"将压缩库内附件并整理数据库文件。\n\n当前大小：{human_size(before)}\n"
-                "附件越多、文本类越多，压缩效果越明显；已经压缩过的图片/视频基本压不动。",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
+        if not msgbox.ask(
+                self, "精简数据库", "压缩库内附件并整理数据库文件。",
+                informative=f"当前大小：{human_size(before)}\n"
+                            "附件越多、文本类越多，压缩效果越明显；"
+                            "已经压缩过的图片/视频基本压不动。",
+                ok="开始精简"):
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
@@ -2064,7 +2036,7 @@ class DatabaseView(QWidget):
         self._update_counts()
         self.status_message.emit(
             f"已精简：{human_size(result['before'])} → {human_size(result['after'])}", 8000)
-        QMessageBox.information(
+        msgbox.info(
             self, "精简完成",
             f"新压缩附件：{result['packed']} 个\n"
             f"{human_size(result['before'])} → {human_size(result['after'])}")
@@ -2087,10 +2059,9 @@ class DatabaseView(QWidget):
         target = Path(path)
         if target.suffix.lower() != ".db":
             target = target.with_suffix(".db")
-        if target.exists() and QMessageBox.question(
-                self, "新建资料库",
-                f"{target.name} 已存在，要覆盖它吗？",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+        if target.exists() and not msgbox.ask(
+                self, "新建资料库", f"{target.name} 已存在，要覆盖它吗？",
+                ok="覆盖", danger=True):
             return
         if target.exists():
             target.unlink()
@@ -2109,7 +2080,7 @@ class DatabaseView(QWidget):
     def show_stats(self) -> None:
         s = self.db.stats()
         tags = self.db.all_tags()
-        QMessageBox.information(
+        msgbox.info(
             self, "资料库信息",
             f"条目数：{s['nodes']}\n附件数：{s['files']}\n"
             f"附件内容：{human_size(s['bytes'])}\n"

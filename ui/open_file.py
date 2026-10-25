@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox, QWidget
 
 from core.database import Database
 from core.storage import TEXT_EXTS, ext_of
+from ui import msgbox
 
 # QImage 一次解码的上限，超过就只提示另存为（避免超大图吃光内存）
 IMAGE_MAX_BYTES = 128 * 1024 * 1024
@@ -24,7 +25,7 @@ def save_attachment(parent: Optional[QWidget], db: Database, file_id: int) -> Op
     row = db.get_file(file_id)
     data = db.blob_bytes(file_id)
     if row is None or data is None:
-        QMessageBox.warning(parent, "文件不存在", "附件内容在库里缺失。")
+        msgbox.warn(parent, "文件不存在", "附件内容在库里缺失。")
         return None
     target, _ = QFileDialog.getSaveFileName(parent, "另存为", row["name"])
     if not target:
@@ -32,7 +33,7 @@ def save_attachment(parent: Optional[QWidget], db: Database, file_id: int) -> Op
     try:
         Path(target).write_bytes(data)
     except OSError as exc:
-        QMessageBox.critical(parent, "保存失败", str(exc))
+        msgbox.error(parent, "保存失败", str(exc))
         return None
     return target
 
@@ -47,6 +48,7 @@ def _offer_save(parent: Optional[QWidget], db: Database, file_id: int, name: str
         "需要外部程序打开时，请先另存到你自己的目录。")
     btn_save = box.addButton("另存为…", QMessageBox.AcceptRole)
     box.addButton("关闭", QMessageBox.RejectRole)
+    msgbox.decorate(box)
     box.exec()
     if box.clickedButton() is btn_save:
         save_attachment(parent, db, file_id)
@@ -56,11 +58,11 @@ def open_attachment(parent: Optional[QWidget], db: Database, file_id: int,
                     allow_preview: bool = True) -> None:
     row = db.get_file(file_id)
     if row is None:
-        QMessageBox.warning(parent, "文件不存在", "这个附件已被删除。")
+        msgbox.warn(parent, "文件不存在", "这个附件已被删除。")
         return
     data = db.blob_bytes(file_id)
     if data is None:
-        QMessageBox.warning(parent, "文件不存在", "附件内容在库里缺失。")
+        msgbox.warn(parent, "文件不存在", "附件内容在库里缺失。")
         return
 
     name = row["name"] or ""
