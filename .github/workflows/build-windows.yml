@@ -48,6 +48,7 @@ jobs:
         shell: bash          # Windows runner 默认用 PowerShell，set/tee 这套写法必须走 bash
         env:
           GZ_VERSION: ${{ steps.ver.outputs.version }}
+          PYTHONUTF8: '1'          # Windows runner 上 Python 默认 cp1252，中文输出会崩
         run: |
           set -o pipefail
           pyinstaller GuiZang.spec --noconfirm --distpath dist --workpath build 2>&1 | tee build.log

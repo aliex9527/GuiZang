@@ -21,7 +21,9 @@ _vspec.loader.exec_module(_vmod)
 APP_VERSION = _vmod.read_version(ROOT)
 VERSION_FILE = _vmod.write_version_file(
     APP_VERSION, os.path.join(ROOT, "build", "version_info.txt"))
-print(f"[归藏] 打包版本 {APP_VERSION}")
+# 这行只能用 ASCII：Windows runner 的 Python 默认 stdout 是 cp1252，
+# 输出中文会抛 UnicodeEncodeError 把整个打包搞挂（v1.1.1/v1.1.2 的 CI 就是这么失败的）。
+print(f"[GuiZang] build version {APP_VERSION}")
 
 hiddenimports = ['markdown.extensions.extra', 'markdown.extensions.sane_lists', 'markdown.extensions.nl2br', 'markdown.extensions.admonition', 'markdown.extensions.codehilite']
 hiddenimports += collect_submodules('markdown')

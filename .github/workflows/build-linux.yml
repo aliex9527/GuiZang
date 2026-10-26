@@ -52,6 +52,7 @@ jobs:
       - name: Build (onedir)
         env:
           GZ_VERSION: ${{ steps.ver.outputs.version }}
+          PYTHONUTF8: '1'          # Windows runner 上 Python 默认 cp1252，中文输出会崩
         run: |
           pyinstaller GuiZang_linux.spec --noconfirm --distpath dist --workpath build
           chmod +x dist/GuiZang/GuiZang
