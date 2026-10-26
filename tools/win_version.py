@@ -77,12 +77,16 @@ def normalize(ver: str) -> str:
     return ".".join(str(n) for n in nums[:3])
 
 
-def read_version(root: Path | None = None) -> str:
-    """读 VERSION 文件；环境变量 GZ_VERSION 优先（CI 用 tag 注入）。"""
+def read_version(root: Path | str | None = None) -> str:
+    """读 VERSION 文件；环境变量 GZ_VERSION 优先（CI 用 tag 注入）。
+
+    注意 root 可能是 str：PyInstaller 注入的 SPECPATH 就是字符串，
+    所以这里必须自己转 Path，否则 `str / "VERSION"` 会直接抛 TypeError。
+    """
     env = os.environ.get("GZ_VERSION", "").strip()
     if env:
         return normalize(env)
-    path = (root or root_dir()) / "VERSION"
+    path = Path(root or root_dir()) / "VERSION"
     try:
         text = path.read_text(encoding="utf-8").strip()
     except OSError:
