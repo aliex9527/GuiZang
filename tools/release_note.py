@@ -28,7 +28,16 @@ import subprocess
 import sys
 from datetime import date
 from pathlib import Path
+
 from typing import List, Optional, Tuple
+
+# Windows 上 Python 默认 stdout 是 cp1252，脚本里的中文 print 会抛
+# UnicodeEncodeError（CI 的 Generate release notes 步骤就是这么挂的）。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, OSError):
+    pass
 
 ROOT = Path(__file__).resolve().parent.parent
 RELEASES = ROOT / "docs" / "releases"

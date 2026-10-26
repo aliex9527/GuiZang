@@ -53,18 +53,6 @@ jobs:
           set -o pipefail
           pyinstaller GuiZang.spec --noconfirm --distpath dist --workpath build 2>&1 | tee build.log
 
-      - name: Publish build log on failure
-        if: failure()
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          # runner 上的日志我们本地看不到，失败时贴到 issue 里才能查
-          { echo "ref: ${GITHUB_REF_NAME}"; echo "runner: ${RUNNER_OS}"; echo;             tail -n 200 build.log 2>/dev/null || echo "(no build.log)"; } > log_tail.txt
-          gh issue create --title "[CI] Windows 构建失败 ${GITHUB_REF_NAME}" \
-            --body-file log_tail.txt || true
-
       - name: Rename with version
         shell: bash
         run: |
@@ -98,3 +86,15 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish build log on failure
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # runner 上的日志我们本地看不到，失败时贴到 issue 里才能查
+          { echo "ref: ${GITHUB_REF_NAME}"; echo "runner: ${RUNNER_OS}"; echo;             tail -n 200 build.log 2>/dev/null || echo "(no build.log)"; } > log_tail.txt
+          gh issue create --title "[CI] Windows 构建失败 ${GITHUB_REF_NAME}" \
+            --body-file log_tail.txt || true
