@@ -45,6 +45,7 @@ jobs:
           pip install "PySide6-Essentials==6.12.0" markdown html2text Pygments "pyinstaller==6.22.3"
 
       - name: Build EXE
+        shell: bash          # Windows runner 默认用 PowerShell，set/tee 这套写法必须走 bash
         env:
           GZ_VERSION: ${{ steps.ver.outputs.version }}
         run: |
