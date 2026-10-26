@@ -45,7 +45,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install PySide6-Essentials markdown html2text Pygments pyinstaller
+          # 锁死 Qt/PyInstaller 版本：CI 上装了新版本后 Windows 打包会莫名失败，
+          # 与本地验证过的组合对齐才好复现
+          pip install "PySide6-Essentials==6.12.0" markdown html2text Pygments "pyinstaller==6.22.3"
 
       - name: Build (onedir)
         env:
