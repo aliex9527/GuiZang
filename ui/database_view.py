@@ -20,7 +20,7 @@ from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices, QFon
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QDialog,
                                QDialogButtonBox, QInputDialog, QMenu,
                                QFileDialog, QFrame, QHBoxLayout, QHeaderView, QLabel,
-                               QLineEdit, QMessageBox, QProgressDialog,
+                               QLineEdit, QMessageBox, QPlainTextEdit, QProgressDialog,
                                QSizePolicy, QSplitter, QStackedWidget, QStyle,
                                QStyledItemDelegate, QTextBrowser, QTextEdit,
                                QToolBar,
@@ -38,6 +38,11 @@ from ui.icons import app_icon, file_icon, folder_icon, leaf_icon
 from ui.keymap import ACTIONS, Action, action_by_id
 from ui.note_editor import NoteEditor
 from ui.markdown_render import md_to_html
+
+# 这些动作只在「分类树」聚焦时才有意义；编辑正文 / 搜索框 / 标题等文本控件
+# 里应按普通文本键处理（例如 Delete 删字、而不是删条目）。否则应用级快捷键
+# 会把 Delete 抢走，导致在正文里写东西时把当前条目（甚至整棵库）误删。
+_TREE_FOCUS_ACTIONS = frozenset({"delete"})
 from ui.search_panel import SearchPanel
 from ui.theme import P
 
@@ -738,8 +743,15 @@ class DatabaseView(QWidget):
             ks = QKeySequence(seq)
             if ks.count() == 0:
                 continue
-            sc = QShortcut(ks, self)
-            sc.setContext(Qt.ApplicationShortcut)
+            # 删除条目这类操作只在分类树聚焦时生效：把快捷键挂到 tree 上、
+            # 用 WidgetShortcut，这样编辑正文 / 搜索框 / 标题框时 Delete 会正常
+            # 交给文本控件（删字），不会被抢去删节点。
+            if aid in _TREE_FOCUS_ACTIONS:
+                sc = QShortcut(ks, self.tree)
+                sc.setContext(Qt.WidgetShortcut)
+            else:
+                sc = QShortcut(ks, self)
+                sc.setContext(Qt.ApplicationShortcut)
             sc.setAutoRepeat(False)
             sc.activated.connect(lambda a=aid: self._dispatch_action(a))
             self._bound_shortcuts.append(sc)
@@ -765,6 +777,22 @@ class DatabaseView(QWidget):
         self._last_action = (aid, now)
         return True
 
+    def _tree_focused(self) -> bool:
+        """当前键盘焦点是否在分类树里（含树本身，但不含树内联重命名的输入框）。
+
+        「删除条目」这类动作只在树聚焦时生效：正文 / 搜索框 / 标题 / 附件栏
+        里按 Delete 应交给对应控件本身（删字、删附件），而不是删条目。
+        """
+        fw = QApplication.focusWidget()
+        if fw is None:
+            return False
+        if fw is self.tree:
+            return True
+        if self.tree.isAncestorOf(fw):
+            # 树内联重命名（QLineEdit）时，Delete 应改字符而不是删条目
+            return not isinstance(fw, QLineEdit)
+        return False
+
     def _dispatch_key(self, event) -> bool:
         """KeyPress 兜底通道：把按键事件按当前键表裁决一次。"""
         key, mods = event.key(), self._kn(event.modifiers())
@@ -779,6 +807,9 @@ class DatabaseView(QWidget):
             return False
         if not self.isVisible() or QApplication.activeModalWidget() is not None:
             return False
+        # 分类树专属动作：焦点不在树里时不当作快捷键，交给聚焦控件自己处理
+        if aid in _TREE_FOCUS_ACTIONS and not self._tree_focused():
+            return False
         if not self._claim(aid):
             return True                      # 已被 QShortcut 处理过，吃掉这次事件
         handler = self._key_handlers.get(aid)
@@ -792,6 +823,9 @@ class DatabaseView(QWidget):
         if not self.isVisible():
             return                       # 多标签库里只有当前视图该响应
         if QApplication.activeModalWidget() is not None:
+            return
+        # 分类树专属动作：焦点不在树里时忽略（避免误删条目）
+        if aid in _TREE_FOCUS_ACTIONS and not self._tree_focused():
             return
         if not self._claim(aid):
             return                       # KeyPress 兜底通道已处理过这次按键
