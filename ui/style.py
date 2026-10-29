@@ -371,6 +371,55 @@ QScrollBar::add-page, QScrollBar::sub-page {{
 }}
 
 /* ---------------------------------------------------------------- 状态栏 */
+/* ---------------------------------------------------------------- 标签栏 */
+/* 资料库标签：Fusion 默认按 QPalette 画成浅灰，深色主题下会留一条白条，
+   所以底色/边框/文字全部显式指定，选中项用面板色亮一档区分。 */
+QTabWidget::pane {{
+    border: none;
+    background: {PANEL};
+    top: -1px;
+}}
+QTabWidget::tab-bar {{
+    alignment: left;
+}}
+QTabBar {{
+    background: {BG};
+    qproperty-drawBase: 0;
+}}
+QTabBar::tab {{
+    background: {SUBTLE};
+    color: {MUTED};
+    border: 1px solid {BORDER};
+    border-bottom: none;
+    border-top-left-radius: 7px;
+    border-top-right-radius: 7px;
+    padding: 6px 12px 6px 14px;
+    margin: 4px 2px 0 0;
+    min-width: 60px;
+}}
+QTabBar::tab:hover:!selected {{
+    background: {HOVER};
+    color: {TEXT};
+}}
+QTabBar::tab:selected {{
+    background: {PANEL};
+    color: {TEXT};
+    border-color: {BORDER};
+    border-bottom: 2px solid {ACCENT};
+    padding-bottom: 5px;
+}}
+QTabBar::tab:!selected {{
+    margin-top: 6px;            /* 未选中的矮一点，视觉上"在后面" */
+}}
+QTabBar::close-button {{
+    background: transparent;
+    border-radius: 4px;
+    margin: 2px;
+}}
+QTabBar::close-button:hover {{
+    background: {HOVER};
+}}
+
 QStatusBar {{
     background: {PANEL};
     border-top: 1px solid {BORDER};
@@ -413,3 +462,17 @@ QCheckBox {{
     spacing: 6px;
 }}
 """
+
+
+def apply(app, name: str) -> None:
+    """切换主题的唯一入口：调色板 + 样式表 + 标题栏，一次换齐。
+
+    只换 QSS 会在标签栏、滚动条槽、系统标题栏留下浅色块，
+    所以这里连 QPalette 和 DWM 标题栏一起处理。
+    """
+    from ui import theme, win_dark
+
+    theme.apply_theme(name)
+    app.setPalette(theme.palette())
+    app.setStyleSheet(qss())
+    win_dark.refresh_all()

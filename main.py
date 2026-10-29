@@ -114,7 +114,7 @@ def main() -> int:
 
     from core.database import Database
     from core.storage import clear_cache
-    from ui import style, theme
+    from ui import style
     from ui.icons import app_icon
     from ui.main_window import MainWindow
 
@@ -135,13 +135,16 @@ def main() -> int:
     from core.ui_state import is_first_run
     from PySide6.QtWidgets import QDialog
 
+    # 顶层窗口一显示就把标题栏调成当前主题色，对话框不用逐个处理
+    from ui import win_dark
+    win_dark.install(app)
+
     if not _explicit_db_arg(sys.argv[1:]) and is_first_run():
         # 首次启动：硬盘上还没有任何库，先让用户选「创建」还是「打开」。
         # 这里得先把外观铺上——主题通常从库里读，此刻还没有库，用浅色打底。
         from ui import msgbox
         from ui.welcome import WelcomeDialog
-        theme.apply_theme("light")
-        app.setStyleSheet(style.qss())
+        style.apply(app, "light")
         app.setWindowIcon(app_icon())
         db = None
         while db is None:
@@ -165,8 +168,7 @@ def main() -> int:
     from ui.md_source import migrate_html_notes
     migrate_html_notes(db)
     # 主题跟着库走（存在 meta 里），不再读 %APPDATA%/GuiZang/config.json
-    theme.apply_theme(db.get_meta("ui.theme", "light"))
-    app.setStyleSheet(style.qss())
+    style.apply(app, db.get_meta("ui.theme", "light"))
     app.setWindowIcon(app_icon())
 
     window = MainWindow(db)

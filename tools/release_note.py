@@ -211,6 +211,51 @@ def render(version: str,
     return "\n".join(lines)
 
 
+def _default_exe(version: str) -> Optional[Path]:
+    """按版本号在 dist 下找安装包。"""
+    cand = DIST / f"GuiZang-{version}-windows-x64" / f"GuiZang-{version}-windows-x64.exe"
+    flat = DIST / f"GuiZang-{version}-windows-x64.exe"
+    return cand if cand.exists() else (flat if flat.exists() else None)
+
+
+def refresh_meta(version: str,
+                 exe: Optional[Path] = None,
+                 also_dist: bool = True) -> Optional[Path]:
+    """只刷新已有说明里的「安装包 / 大小 / SHA256 / 代码提交」，正文一字不动。
+
+    手写的版本摘要经不起重跑：`write_note` 会按 git 提交区间整篇重写，
+    摘要和发布日期都会被冲掉。CI 打包出来的 exe 又是现场构建的，
+    SHA256 必然和本地不同——所以发版流程改成「手写正文 + 这次只回填元信息」。
+    """
+    path = note_path(version)
+    if not path.exists():
+        return None
+    if exe is None:
+        exe = _default_exe(version)
+    elif not exe.is_absolute():
+        exe = ROOT / exe
+
+    text = path.read_text(encoding="utf-8")
+    if exe is not None and exe.exists():
+        size = f"{exe.stat().st_size / (1024 * 1024):.2f} MB"
+        digest = sha256_of(exe)
+        text = re.sub(r"^\| 安装包 \| .*? \|$", f"| 安装包 | `{exe.name}` |",
+                      text, flags=re.MULTILINE)
+        text = re.sub(r"^\| 大小 \| .*? \|$", f"| 大小 | {size} |",
+                      text, flags=re.MULTILINE)
+        text = re.sub(r"^\| SHA256 \| .*? \|$", f"| SHA256 | `{digest}` |",
+                      text, flags=re.MULTILINE)
+    sha = head_sha()
+    if sha:
+        text = re.sub(r"^\| 代码提交 \| .*? \|$", f"| 代码提交 | `{sha}` |",
+                      text, flags=re.MULTILINE)
+
+    path.write_text(text, encoding="utf-8", newline="\n")
+    if also_dist and exe is not None and exe.exists():
+        (exe.parent / "版本说明.md").write_text(text, encoding="utf-8", newline="\n")
+    return path
+
+
 def write_note(version: str,
                exe: Optional[Path] = None,
                since: Optional[str] = None,
@@ -290,11 +335,24 @@ def main(argv: List[str]) -> int:
     ap.add_argument("--note", default="", help="一句话摘要，写在标题下面")
     ap.add_argument("--exe", help="安装包路径，默认在 dist 下按版本号找")
     ap.add_argument("--backfill", action="store_true", help="批量补写历史版本说明")
+    ap.add_argument("--refresh", action="store_true",
+                    help="只回填已有说明里的安装包/大小/SHA256/提交号，正文不动")
     args = ap.parse_args(argv[1:])
 
     if args.backfill:
         n = backfill()
         print(f"√ 补写完成，共 {n} 份" if n else "√ 无需补写，历史说明已齐全")
+        return 0
+
+    if args.refresh:
+        if not args.version:
+            ap.error("--refresh 需要同时给 --version")
+        exe = Path(args.exe) if args.exe else None
+        path = refresh_meta(args.version, exe=exe)
+        if path is None:
+            print(f"× 没有 v{args.version} 的说明文件，先用 --version 生成")
+            return 1
+        print(f"√ 已回填包信息：{path}")
         return 0
 
     if not args.version:

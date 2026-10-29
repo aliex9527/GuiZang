@@ -1032,7 +1032,7 @@ class DatabaseView(QWidget):
         self._sync_theme_checks(current_theme())
         self._sync_para_action()
         if hasattr(self, "act_source"):
-            self.act_source.setChecked(bool(self.editor.edit.md_rules))
+            self.act_source.setChecked(bool(self.editor.source_only()))
         if hasattr(self, "act_focus"):
             self.act_focus.setChecked(self._focus_mode)
         if hasattr(self, "act_typewriter"):
@@ -1206,31 +1206,27 @@ class DatabaseView(QWidget):
     def _toggle_bold(self) -> None:
         self._ensure_body_focus()
         self.editor.toggle_bold()
-        self._fmt_hint("加粗",
-                       self.editor.edit.textCursor().charFormat().fontWeight() > QFont.Normal)
+        self._fmt_hint("加粗", self.editor.fmt_state().get("bold", False))
 
     def _toggle_italic(self) -> None:
         self._ensure_body_focus()
         self.editor.toggle_italic()
-        self._fmt_hint("斜体", self.editor.edit.textCursor().charFormat().fontItalic())
+        self._fmt_hint("斜体", self.editor.fmt_state().get("italic", False))
 
     def _toggle_underline(self) -> None:
         self._ensure_body_focus()
         self.editor.toggle_underline()
-        self._fmt_hint("下划线",
-                       self.editor.edit.textCursor().charFormat().fontUnderline())
+        self._fmt_hint("下划线", self.editor.fmt_state().get("underline", False))
 
     def _toggle_strike(self) -> None:
         self._ensure_body_focus()
         self.editor.toggle_strike()
-        self._fmt_hint("删除线",
-                       self.editor.edit.textCursor().charFormat().fontStrikeOut())
+        self._fmt_hint("删除线", self.editor.fmt_state().get("strike", False))
 
     def _toggle_inline_code(self) -> None:
         self._ensure_body_focus()
         self.editor.toggle_inline_code()
-        self._fmt_hint("行内代码",
-                       self.editor.edit.textCursor().charFormat().fontFixedPitch())
+        self._fmt_hint("行内代码", self.editor.fmt_state().get("code", False))
 
     def _toggle_highlight(self) -> None:
         self._ensure_body_focus()
@@ -1259,7 +1255,7 @@ class DatabaseView(QWidget):
     def _sync_para_action(self) -> None:
         if not hasattr(self, "act_para"):
             return
-        level = int(self.editor.edit.textCursor().blockFormat().headingLevel())
+        level = int(self.editor.heading_level())
         self.act_para.setChecked(level == 0)
 
     _zoom_level = 0
@@ -1279,11 +1275,13 @@ class DatabaseView(QWidget):
         self.fullscreen_toggled.emit()
 
     def set_theme(self, name: str) -> None:
-        from ui import msgbox, style, theme
-        theme.apply_theme(name)
+        from ui import style, theme
         app = QApplication.instance()
         if app is not None:
-            app.setStyleSheet(style.qss())
+            # 调色板 + 样式表 + 系统标题栏一起换；只换 QSS 会留下白标签栏
+            style.apply(app, name)
+        else:
+            theme.apply_theme(name)
         self.editor.refresh_theme()
         self.editor.doc_nav.refresh_theme()
         self._apply_icon_theme()
@@ -1713,8 +1711,8 @@ class DatabaseView(QWidget):
     # ---------------------------------------------------------------- 模式
 
     def toggle_source_mode(self) -> None:
-        """源码模式：关掉即时渲染，直接看/改 Markdown 原文。"""
-        on = self.editor.edit.md_rules
+        """源码模式：收起预览，只看 Markdown 原文。"""
+        on = not self.editor.source_only()
         self.editor.set_source_mode(on)
         if hasattr(self, "act_source"):
             self.act_source.setChecked(on)

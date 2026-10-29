@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
@@ -22,6 +23,42 @@ _TICK_GAP = 12         # 刻度固定间距（标题少时也紧凑排列，不�
 _MIN_GAP = 4           # 标题太多挤不下时的最小间距
 _HOVER_DELAY = 120     # 悬停多久后弹出预览（毫秒），太快划过不闪
 _LIST_MAX = 42         # 预览列表最多显示多少行（超出按当前项开窗）
+
+# 源码里的标题与围栏
+_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.*)$")
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+# 标题里的行内 Markdown 标记。导航是拿来「读」的，把 `**加粗**` 原样露出来
+# 只是噪音；标题都很短，正则剥一层就够，不必为此拉起整个行内解析器。
+_TITLE_STRIP = (
+    (re.compile(r"!\[([^\]]*)\]\((?:[^()]|\([^)]*\))*\)"), r"\1"),   # 图片 → alt
+    (re.compile(r"\[([^\]]*)\]\((?:[^()]|\([^)]*\))*\)"), r"\1"),    # 链接 → 文字
+    (re.compile(r"!?\[([^\]]*)\]\[[^\]]*\]"), r"\1"),               # 引用式链接
+    (re.compile(r"`+([^`]*)`+"), r"\1"),                            # 行内代码
+    (re.compile(r"\*\*\*(\S(?:.*?\S)?)\*\*\*"), r"\1"),
+    (re.compile(r"\*\*(\S(?:.*?\S)?)\*\*"), r"\1"),
+    (re.compile(r"(?<!\w)___(\S(?:.*?\S)?)___(?!\w)"), r"\1"),
+    (re.compile(r"(?<!\w)__(\S(?:.*?\S)?)__(?!\w)"), r"\1"),
+    (re.compile(r"~~(\S(?:.*?\S)?)~~"), r"\1"),                     # 删除线
+    (re.compile(r"==(\S(?:.*?\S)?)=="), r"\1"),                     # 高亮
+    (re.compile(r"(?<![\w*])\*(\S(?:.*?\S)?)\*(?![\w*])"), r"\1"),
+    (re.compile(r"(?<!\w)_(\S(?:.*?\S)?)_(?!\w)"), r"\1"),
+    (re.compile(r"\{#[^}]*\}"), ""),                                # 标题锚点 {#id}
+    (re.compile(r"<[^>]+>"), ""),                                   # 行内 HTML
+    (re.compile(r"\\([\\`*_{}\[\]()#+\-.!|~=<>])"), r"\1"),         # 反斜杠转义
+)
+
+
+def plain_title(text: str) -> str:
+    """标题去掉行内标记后的可读文字（``**粗**`` → ``粗``）。"""
+    out = text or ""
+    for _ in range(3):            # 套标记（`**[链接](u)**`）要过几轮才干净
+        prev = out
+        for pat, rep in _TITLE_STRIP:
+            out = pat.sub(rep, out)
+        if out == prev:
+            break
+    return out.strip()
 
 class _PreviewCard(QFrame):
     """悬停刻度时在导航条左侧弹出的**整列标题列表**（当前行加粗高亮）。
@@ -175,11 +212,16 @@ class _PreviewCard(QFrame):
             self.setMinimumHeight(0)
             self.setMaximumHeight(16777215)
 
-        # 贴在导航条左侧，垂直对齐鼠标；超出屏幕就夹回来
-        x = anchor.x() - self.width() - 8
+        # 卡片贴着导航条展开：导航条本身就在编辑区最右侧，所以默认往左铺，
+        # 让整块列表落在窗口右半边；只有在左边实在放不下时才翻到导航条右侧。
+        gap = 8
+        x = anchor.x() - self.width() - gap
         y = anchor.y() - self.height() // 2
         if screen is not None:
             geo = screen.availableGeometry()
+            if x < geo.left() + 6:
+                x = anchor.x() + _BAR_W + gap
+            # 两边都挤（窄窗口 / 超长标题）时夹回屏幕内，宁可压住正文也别出屏
             x = max(geo.left() + 6, min(x, geo.right() - self.width() - 6))
             y = max(geo.top() + 6, min(y, geo.bottom() - self.height() - 6))
         self.move(x, y)
@@ -230,7 +272,11 @@ class DocNav(QWidget):
     # ------------------------------------------------------------ 解析
 
     def reparse(self) -> None:
-        """扫描文档里的标题块（带 200ms 节流，长文档也不卡）。"""
+        """扫描文档里的标题（带 200ms 节流，长文档也不卡）。
+
+        编辑器现在是 Markdown 源码：标题就是行首的 ``#`` 系列，围栏代码块
+        里的 ``#`` 不算（那是代码注释）。
+        """
         self._headings = []
         self._hide_preview()             # 标题结构变了，旧预览已失效
         ed = self._edit
@@ -239,11 +285,19 @@ class DocNav(QWidget):
             return
         doc = ed.document()
         block = doc.firstBlock()
+        in_fence = False
         while block.isValid():
-            lv = int(block.blockFormat().headingLevel())
-            if lv > 0:
-                self._headings.append((lv, block.blockNumber(),
-                                       block.text()[:120]))
+            text = block.text()
+            if _FENCE_RE.match(text):
+                in_fence = not in_fence
+                block = block.next()
+                continue
+            if not in_fence:
+                m = _HEADING_RE.match(text)
+                if m:
+                    # 存清洗过的文字：悬停卡片直接显示，别让 `**` 之类的标记漏出来
+                    self._headings.append((len(m.group(1)), block.blockNumber(),
+                                           plain_title(m.group(2))[:120]))
             block = block.next()
         self.update()
 

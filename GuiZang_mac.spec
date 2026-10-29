@@ -27,6 +27,7 @@ hiddenimports = ['markdown.extensions.extra', 'markdown.extensions.sane_lists',
 hiddenimports += collect_submodules('markdown')
 hiddenimports += collect_submodules('pygments.formatters')
 hiddenimports += collect_submodules('pygments.lexers')
+hiddenimports += collect_submodules('mdengine')   # 自研 Markdown 引擎（懒加载，静态分析看不到）
 
 a = Analysis(
     ['main.py'],

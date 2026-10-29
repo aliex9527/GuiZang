@@ -140,7 +140,7 @@ class MainWindow(QMainWindow):
         else:
             self.lbl_saved.setText("")
             self.lbl_saved.setStyleSheet("")
-        self.lbl_mode.setText("源码模式" if view.editor.edit.md_rules else "")
+        self.lbl_mode.setText("源码模式" if view.editor.source_only() else "")
         self._update_title(view)
 
     def _update_title(self, view: DatabaseView) -> None:

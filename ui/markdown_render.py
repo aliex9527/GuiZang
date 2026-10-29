@@ -5,8 +5,12 @@ from __future__ import annotations
 import re
 from typing import List
 
-import html2text
-import markdown
+try:
+    import html2text
+    import markdown
+except ImportError:  # 只带自研引擎运行时也能导入本模块
+    html2text = None
+    markdown = None
 
 _TASK_RE = re.compile(r"^(\s*)[-*+]\s+\[([ xX])\]\s+", re.M)
 _FENCE_RE = re.compile(r"<pre>", re.I)
@@ -88,9 +92,16 @@ def _preprocess_highlight(source: str) -> str:
 
 
 def md_to_html(source: str) -> str:
-    """Markdown 源码 → HTML 片段（已内联代码高亮配色）。"""
+    """Markdown 源码 → HTML 片段（已内联代码高亮配色）。
+
+    走自研引擎时用**增量**渲染：编辑器每次输入都会调用这里，全量重排整篇
+    在长笔记上会有肉眼可见的停顿；增量版只重排改动过的块。
+    """
     if not source or not source.strip():
         return ""
+    from ui import md_engine_bridge
+    if markdown is None or md_engine_bridge.using_own():
+        return md_engine_bridge.live_preview_html(source)
     try:
         engine = _md_engine()
         html = engine.convert(_preprocess_task_lists(_preprocess_highlight(source)))
@@ -107,6 +118,9 @@ def html_to_md(html: str) -> str:
     """富文本 HTML → Markdown，保留链接与 gzs 内嵌图片。"""
     if not html or not html.strip():
         return ""
+    from ui import md_engine_bridge
+    if html2text is None or md_engine_bridge.using_own():
+        return md_engine_bridge.html_to_markdown(html)
     conv = html2text.HTML2Text(baseurl="")
     conv.body_width = 0
     conv.ignore_links = False

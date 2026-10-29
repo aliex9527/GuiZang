@@ -18,7 +18,10 @@ import re
 from html.parser import HTMLParser
 from typing import Dict, List, Optional, Tuple
 
-import markdown
+try:
+    import markdown
+except ImportError:  # 只带自研引擎运行时也能导入本模块（requirements 可瘦身）
+    markdown = None
 from PySide6.QtGui import QTextDocument, QTextFormat
 
 # 图片"用户手动指定过宽度"的标记。带这个标记才往 Markdown 里写 {width=N}；
@@ -36,6 +39,10 @@ _MULTI_BLANK_RE = re.compile(r"\n{3,}")
 _QUOTE_MARGIN_RE = re.compile(r"margin-left:\s*(\d+)px")
 _WEIGHT_RE = re.compile(r"font-weight:\s*(\d{3})")
 _MONO_HINT = ("monospace", "consolas", "courier", "menlo", "cascadia")
+# 表格单元格的对齐（新旧两条渲染链的写法都带空格差异，用 \s* 兜住）
+_ALIGN_RE = re.compile(r"text-align:\s*(left|center|right)")
+# Markdown 表格分隔行的对齐写法
+_ALIGN_SEP = {"left": ":---", "center": ":--:", "right": "---:"}
 # 亮色/暗色主题下代码块与引用的背景色（迁移历史数据时要都认）
 _KNOWN_BLOCK_BG = {
     "code_bg": ("#f6f8fa", "#171a21"),
@@ -132,6 +139,10 @@ def markdown_to_html(source: str) -> str:
     """Markdown 源码 → 可塞进 QTextDocument 的 HTML 片段。"""
     if not source or not source.strip():
         return ""
+    from ui import md_engine_bridge
+    # markdown 缺失时直接走自研引擎：这样卸掉第三方库应用照样能读笔记
+    if markdown is None or md_engine_bridge.using_own():
+        return md_engine_bridge.to_qt_html(source)
     engine = markdown.Markdown(extensions=["extra", "sane_lists"], output_format="html")
     try:
         html = engine.convert(_preprocess(source))
@@ -145,6 +156,10 @@ def markdown_to_html(source: str) -> str:
 # ---------------------------------------------------------------- HTML → Markdown
 
 _SPAN_TOKEN = {"bold": "**", "italic": "*", "strike": "~~", "mark": "==", "code": "`"}
+# 可以安全合并的行内标记：Qt 把「一段粗体中间夹了行内代码」拆成多个粗体 span，
+# 逐个开闭会写出一串 `**…****…**`，既难看又会让别的解析器误判。这几个标记
+# 合并后渲染效果不变（`**a****b**` 与 `**ab**` 都是粗体），所以直接并。
+_MERGEABLE = {"**", "==", "~~"}
 # 下划线在 Markdown 里没有原生语法，Typora 用的是内联 HTML（<u>…</u>），
 # 开闭标记不一样，所以单独一张表。
 _SPAN_CLOSE_EXTRA = {"underline": "</u>"}
@@ -175,6 +190,10 @@ class _HtmlToMd(HTMLParser):
         self.href: Optional[str] = None
         self.skip_depth = 0                       # <head>/<style> 里的内容不要
         self.li_index = 0
+        self.in_cell = False                      # 当前是否在表格单元格内
+        self.cell_align = ""                      # 当前单元格的对齐方式
+        self.code_indent = 0                      # 代码块在 Qt 里的缩进层级
+        self.pending_close = ""                   # 刚写出的行内闭合标记
 
     # -------------------------------------------------------------- 基础
 
@@ -199,9 +218,11 @@ class _HtmlToMd(HTMLParser):
         return self.kind.startswith("h")
 
     def _depth(self) -> int:
-        """列表嵌套层级（列表项之外一律 0）。"""
+        """嵌套层级（列表项按列表深度，代码块按 Qt 记下的缩进）。"""
         if self.kind in ("li", "li-ol") and self.list_stack:
             return max(0, int(self.list_stack[-1].get("indent", 1)) - 1)
+        if self.kind == "code":
+            return self.code_indent
         return 0
 
     def _is_block_style(self, key: str, style: str) -> bool:
@@ -228,8 +249,13 @@ class _HtmlToMd(HTMLParser):
         a = dict(attrs)
         style = (a.get("style") or "").lower()
 
+        # 单元格内部单独一条路：Qt 把每个单元格包成 <td><p>…</p></td>，块级
+        # 标签在这里没有意义，但行内标记（`code`、**粗**、链接）必须留住。
+        if self.in_cell:
+            self._cell_start(tag, a, style)
+            return
         if self.table is not None and tag not in ("tr", "td", "th", "table"):
-            return   # 表格内部只收纯文本
+            return        # 表格里除了单元格本身，别的块级标签都不要
 
         if tag in self._HEADINGS:
             self._flush()
@@ -239,6 +265,11 @@ class _HtmlToMd(HTMLParser):
             self._flush()
             if self._is_block_style("code_bg", style):
                 self.kind = "code"
+                # Qt 把列表项里的代码块提到 <li> 外面，只用 -qt-block-indent
+                # 记住它原本的缩进层级；存回 Markdown 时靠它把围栏缩回去，
+                # 否则列表会被代码块打断、有序编号从 1 重来。
+                m = re.search(r"-qt-block-indent:\s*(\d+)", style)
+                self.code_indent = int(m.group(1)) if m else 0
             elif self._is_quote_para(style):
                 self.kind = "quote"
             else:
@@ -282,39 +313,121 @@ class _HtmlToMd(HTMLParser):
             return
         if tag in ("td", "th") and self.table is not None:
             self.cell = []
+            self.in_cell = True
+            m = _ALIGN_RE.search(style)
+            self.cell_align = m.group(1) if m else ""
             return
+        self._inline_start(tag, a, style, self.buf)
+
+    # -------------------------------------------------------------- 单元格
+
+    def _cell_start(self, tag: str, a: Dict, style: str) -> None:
+        """单元格内部：只认行内标记，另外从 ``<p align>`` 取列对齐。"""
+        if tag == "p":
+            # Qt 把列对齐写成 <p align="right">，不在 style 里
+            align = (a.get("align") or "").lower()
+            if align in ("left", "center", "right"):
+                self.cell_align = align
+            return
+        if tag in ("td", "th", "table", "tr"):
+            return
+        self._inline_start(tag, a, style, self.cell, in_table=True)
+
+    def _cell_end(self, tag: str) -> None:
+        if tag in ("p", "td", "th", "table", "tr"):
+            return
+        self._inline_end(tag, self.cell)
+
+    # -------------------------------------------------------------- 行内
+
+    def _open_mark(self, sink: List[str], mark: str) -> None:
+        """写一个行内开始标记。
+
+        如果上一步刚写出的闭合标记与它相同（中间没有任何文字），说明 Qt 只是
+        把同一个格式拆成了两段：把那个闭合标记撤掉，让整段保持"开着"，这样
+        `**含 `代码` 的粗体**` 不会写成 `**含 ****`代码`**** 的粗体**`。
+        """
+        if mark in _MERGEABLE and self.pending_close == mark and sink and sink[-1] == mark:
+            sink.pop()
+            self.pending_close = ""
+            return
+        sink.append(mark)
+        self.pending_close = ""
+
+    def _close_mark(self, sink: List[str], mark: str) -> None:
+        sink.append(mark)
+        self.pending_close = mark if mark in _MERGEABLE else ""
+
+    def _inline_start(self, tag: str, a: Dict, style: str, sink: List[str],
+                      in_table: bool = False) -> None:
+        """行内标签 → Markdown 标记，写进 ``sink``。"""
         if tag == "br":
-            self.buf.append("  \n")
+            sink.append("  \n")
+            self.pending_close = ""
             return
         if tag == "img":
-            self.buf.append(self._img_md(a))
+            sink.append(self._img_md(a))
+            self.pending_close = ""
             return
         if tag == "a":
             self.href = a.get("href") or ""
-            self.buf.append("[")
+            sink.append("[")
+            self.pending_close = ""
             return
         # 代码块内与标题内都不需要行内标记：内容本身已经是最终形态
         if self.kind == "code" or self._in_heading():
             return
         if tag in ("b", "strong"):
-            self.buf.append("**")
+            self._open_mark(sink, "**")
         elif tag in ("i", "em"):
-            self.buf.append("*")
+            self._open_mark(sink, "*")
         elif tag in ("s", "strike", "del"):
-            self.buf.append("~~")
+            self._open_mark(sink, "~~")
+        elif tag == "mark":
+            self._open_mark(sink, "==")
         elif tag == "code":
-            self.buf.append("`")
+            self._open_mark(sink, "`")
         elif tag == "span":
             kinds = self._span_kinds(style)
+            if in_table and self.table and len(self.table["rows"]) == 1:
+                # 表头单元格天生加粗（Qt 给 <th> 打 font-weight:700），
+                # 那是渲染样式不是用户标的 **，写回源码会把表头变成 **a**
+                kinds = [k for k in kinds if k != "bold"]
             self.span_stack.append(kinds)
             for k in kinds:
-                self.buf.append(_SPAN_TOKEN.get(k) or _SPAN_OPEN_EXTRA[k])
+                self._open_mark(sink, _SPAN_TOKEN.get(k) or _SPAN_OPEN_EXTRA[k])
+
+    def _inline_end(self, tag: str, sink: List[str]) -> None:
+        if tag == "a":
+            sink.append("](%s)" % (self.href or ""))
+            self.href = None
+            self.pending_close = ""
+            return
+        if self.kind == "code" or self._in_heading():
+            return
+        if tag in ("b", "strong"):
+            self._close_mark(sink, "**")
+        elif tag in ("i", "em"):
+            self._close_mark(sink, "*")
+        elif tag in ("s", "strike", "del"):
+            self._close_mark(sink, "~~")
+        elif tag == "mark":
+            self._close_mark(sink, "==")
+        elif tag == "code":
+            self._close_mark(sink, "`")
+        elif tag == "span":
+            kinds = self.span_stack.pop() if self.span_stack else []
+            for k in reversed(kinds):
+                self._close_mark(sink, _SPAN_TOKEN.get(k) or _SPAN_CLOSE_EXTRA[k])
 
     def handle_endtag(self, tag: str) -> None:
         if tag in ("head", "style", "script"):
             self.skip_depth = max(0, self.skip_depth - 1)
             return
         if self.skip_depth:
+            return
+        if self.in_cell and tag not in ("td", "th"):
+            self._cell_end(tag)
             return
         if self.table is not None and tag not in ("tr", "td", "th", "table"):
             return
@@ -349,28 +462,20 @@ class _HtmlToMd(HTMLParser):
             return
         if tag in ("td", "th") and self.table is not None:
             if self.table["rows"]:
-                text = "".join(self.cell).strip().replace("\n", " ").replace("|", "\\|")
+                text = "".join(self.cell).strip().replace("\n", " ")
+                # 只转义还没转义过的竖线，否则 `\|` 每存一次就多一层反斜杠
+                text = re.sub(r"(?<!\\)\|", r"\\|", text)
                 self.table["rows"][-1].append(text)
+                row = len(self.table["rows"]) - 1
+                col = len(self.table["rows"][-1]) - 1
+                # 列对齐只从**数据行**取：Qt 把表头默认渲染成居中
+                # （<th> 天生 center），拿表头判断会把每张表都变成 :--:。
+                if row >= 1 and col >= 0 and self.cell_align:
+                    self.table.setdefault("aligns", {}).setdefault(col, self.cell_align)
             self.cell = []
+            self.in_cell = False
             return
-        if tag == "a":
-            self.buf.append("](%s)" % (self.href or ""))
-            self.href = None
-            return
-        if self.kind == "code" or self._in_heading():
-            return
-        if tag in ("b", "strong"):
-            self.buf.append("**")
-        elif tag in ("i", "em"):
-            self.buf.append("*")
-        elif tag in ("s", "strike", "del"):
-            self.buf.append("~~")
-        elif tag == "code":
-            self.buf.append("`")
-        elif tag == "span":
-            kinds = self.span_stack.pop() if self.span_stack else []
-            for k in reversed(kinds):
-                self.buf.append(_SPAN_TOKEN.get(k) or _SPAN_CLOSE_EXTRA[k])
+        self._inline_end(tag, self.buf)
 
     def handle_data(self, data: str) -> None:
         if self.skip_depth:
@@ -378,13 +483,12 @@ class _HtmlToMd(HTMLParser):
         if self.in_pre:
             self.pre_lines.append(data)
             return
-        if self.table is not None:
-            self.cell.append(data)
-            return
         text = data.replace("\u2028", "\n").replace("\u00a0", " ")
         if self.in_flow:
             text = text.replace("\n", " ")
-        self.buf.append(text)
+        if text:
+            sink = self.cell if self.in_cell else self.buf
+            sink.append(text)
 
     # -------------------------------------------------------------- 细节
 
@@ -432,8 +536,14 @@ class _HtmlToMd(HTMLParser):
             return ""
         width = max(len(r) for r in rows)
         rows = [r + [""] * (width - len(r)) for r in rows]
+        aligns = table.get("aligns") or {}
+
+        def sep(i: int) -> str:
+            # 数据行带对齐就写回 `:---` / `:--:` / `---:`，让对齐不丢
+            return _ALIGN_SEP.get(aligns.get(i, ""), "---")
+
         lines = ["| " + " | ".join(rows[0]) + " |",
-                 "|" + "|".join([" --- "] * width) + "|"]
+                 "| " + " | ".join(sep(i) for i in range(width)) + " |"]
         for r in rows[1:]:
             lines.append("| " + " | ".join(r) + " |")
         return "\n".join(lines)
@@ -494,6 +604,12 @@ def _assemble(blocks: List[Tuple[str, str]]) -> str:
                 i += 1
             while body and not body[-1].strip():
                 body.pop()
+            pad = "    " * depth
+            if pad:
+                # 列表项里的代码块：缩进回去才能留在列表内，编号也才不会重置
+                lines.extend(pad + ln if ln else "" for ln in
+                             ["```"] + body + ["```", ""])
+                continue
             gap()
             lines.append("```")
             lines.extend(body)
@@ -543,6 +659,8 @@ def _next_ol(lines: List[str], pad: str) -> int:
     for line in reversed(lines):
         if not line.strip():
             continue
+        if line[:1] == " ":
+            continue          # 缩进内容（列表里的代码块等）不是同级项，跳过
         m = re.match(r"^(\s*)(\d+)\. ", line)
         if m:
             if m.group(1) == pad:

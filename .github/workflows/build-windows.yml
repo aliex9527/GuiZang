@@ -60,13 +60,21 @@ jobs:
           mv dist/GuiZang.exe "dist/GuiZang-${V}-windows-x64.exe"
           ls -lh dist/
 
-      - name: Generate release notes
+      - name: Prepare release notes
         shell: bash
         run: |
           V="${{ steps.ver.outputs.version }}"
-          python tools/release_note.py --version "$V" --exe "dist/GuiZang-${V}-windows-x64.exe"
+          NOTE="docs/releases/v${V}.md"
+          if [ -f "$NOTE" ]; then
+            # 仓库里已有手写说明：只回填这次构建的大小 / SHA256 / 提交号，正文保留
+            python tools/release_note.py --version "$V" --refresh \
+              --exe "dist/GuiZang-${V}-windows-x64.exe"
+          else
+            python tools/release_note.py --version "$V" \
+              --exe "dist/GuiZang-${V}-windows-x64.exe"
+          fi
           # 用 ASCII 文件名上传，否则 Release 里会显示成 default.md
-          mv "dist/版本说明.md" "dist/GuiZang-${V}-windows-x64.md"
+          cp "dist/版本说明.md" "dist/GuiZang-${V}-windows-x64.md"
           ls -l dist/*.md
 
       - name: Upload EXE
@@ -81,6 +89,7 @@ jobs:
       - name: Publish to Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: docs/releases/v${{ steps.ver.outputs.version }}.md
           files: |
             dist/*.exe
             dist/*.md
