@@ -337,6 +337,8 @@ def main(argv: List[str]) -> int:
     ap.add_argument("--backfill", action="store_true", help="批量补写历史版本说明")
     ap.add_argument("--refresh", action="store_true",
                     help="只回填已有说明里的安装包/大小/SHA256/提交号，正文不动")
+    ap.add_argument("--no-dist", action="store_true",
+                    help="不往 dist/版本说明.md 写副本（说明只作为 Release 正文时用）")
     args = ap.parse_args(argv[1:])
 
     if args.backfill:
@@ -348,7 +350,7 @@ def main(argv: List[str]) -> int:
         if not args.version:
             ap.error("--refresh 需要同时给 --version")
         exe = Path(args.exe) if args.exe else None
-        path = refresh_meta(args.version, exe=exe)
+        path = refresh_meta(args.version, exe=exe, also_dist=not args.no_dist)
         if path is None:
             print(f"× 没有 v{args.version} 的说明文件，先用 --version 生成")
             return 1
@@ -360,7 +362,8 @@ def main(argv: List[str]) -> int:
 
     exe = Path(args.exe) if args.exe else None
     path = write_note(args.version, exe=exe, since=args.since,
-                      until=args.until, note=args.note)
+                      until=args.until, note=args.note,
+                      also_dist=not args.no_dist)
     print(f"√ 版本说明：{path}")
     return 0
 

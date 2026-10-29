@@ -63,37 +63,31 @@ jobs:
       - name: Prepare release notes
         shell: bash
         run: |
+          # 版本说明只作为 Release 正文，不再进 assets（所以也不往 dist 里写副本）
           V="${{ steps.ver.outputs.version }}"
           NOTE="docs/releases/v${V}.md"
           if [ -f "$NOTE" ]; then
             # 仓库里已有手写说明：只回填这次构建的大小 / SHA256 / 提交号，正文保留
-            python tools/release_note.py --version "$V" --refresh \
+            python tools/release_note.py --version "$V" --refresh --no-dist \
               --exe "dist/GuiZang-${V}-windows-x64.exe"
           else
-            python tools/release_note.py --version "$V" \
+            python tools/release_note.py --version "$V" --no-dist \
               --exe "dist/GuiZang-${V}-windows-x64.exe"
           fi
-          # 改名为 ASCII 上传，否则 Release 里会显示成 default.md；
-          # 必须用 mv 而不是 cp，否则中文名那份也会被 dist/*.md 一起传上去
-          mv "dist/版本说明.md" "dist/GuiZang-${V}-windows-x64.md"
-          ls -l dist/*.md
+          head -14 "$NOTE"
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
           name: GuiZang-${{ steps.ver.outputs.version }}-windows-x64
-          path: |
-            dist/*.exe
-            dist/*.md
+          path: dist/*.exe
           if-no-files-found: error
 
       - name: Publish to Release
         uses: softprops/action-gh-release@v2
         with:
           body_path: docs/releases/v${{ steps.ver.outputs.version }}.md
-          files: |
-            dist/*.exe
-            dist/*.md
+          files: dist/*.exe
           draft: false
           prerelease: false
         env:
