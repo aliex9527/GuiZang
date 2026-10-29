@@ -73,8 +73,9 @@ jobs:
             python tools/release_note.py --version "$V" \
               --exe "dist/GuiZang-${V}-windows-x64.exe"
           fi
-          # 用 ASCII 文件名上传，否则 Release 里会显示成 default.md
-          cp "dist/版本说明.md" "dist/GuiZang-${V}-windows-x64.md"
+          # 改名为 ASCII 上传，否则 Release 里会显示成 default.md；
+          # 必须用 mv 而不是 cp，否则中文名那份也会被 dist/*.md 一起传上去
+          mv "dist/版本说明.md" "dist/GuiZang-${V}-windows-x64.md"
           ls -l dist/*.md
 
       - name: Upload EXE
